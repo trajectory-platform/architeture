@@ -1,0 +1,78 @@
+@startuml auth-db
+title Trajectory — ER: auth_db (Auth Service)
+
+hide circle
+skinparam linetype ortho
+
+entity "identities" as identities {
+  * id : uuid <<PK>>
+  --
+  * email : citext <<UQ>>
+  * role : text  -- student | teacher | admin
+  * status : text  -- ACTIVE | BLOCKED
+  * created_at : timestamptz
+}
+
+entity "credentials" as credentials {
+  * identity_id : uuid <<PK, FK>>
+  --
+  * password_hash : text  -- argon2id
+  * updated_at : timestamptz
+}
+
+entity "refresh_tokens" as refresh_tokens {
+  * id : uuid <<PK>>  -- = jti
+  --
+  * identity_id : uuid <<FK>>
+  * family_id : uuid  -- цепочка ротаций одного login
+  * token_hash : bytea <<UQ>>  -- sha256, не сам токен
+  * status : text  -- ACTIVE | ROTATED | REVOKED
+  replaced_by : uuid <<FK self>>
+  * expires_at : timestamptz
+  * created_at : timestamptz
+}
+
+entity "signing_keys" as signing_keys {
+  * kid : text <<PK>>
+  --
+  * alg : text  -- EdDSA | RS256
+  * public_jwk : jsonb  -- отдаётся в JWKS
+  * private_key : bytea  -- зашифрован KEK
+  * status : text  -- NEXT | ACTIVE | RETIRING | RETIRED
+  not_after : timestamptz
+  * created_at : timestamptz
+}
+
+entity "outbox" as outbox {
+  * id : bigserial <<PK>>
+  --
+  * aggregate_id : uuid  -- identity_id
+  * subject : text  -- trajectory.user.registered
+  * payload : bytea  -- protobuf
+  * created_at : timestamptz
+  published_at : timestamptz  -- NULL = не опубликовано
+}
+
+identities ||--o| credentials : "1:0..1 (OAuth-identity\nможет быть без пароля)"
+identities ||--o{ refresh_tokens
+refresh_tokens |o--o| refresh_tokens : "replaced_by\n(цепочка ротации)"
+
+note bottom of refresh_tokens
+  partial unique index:
+  (family_id) WHERE status = 'ACTIVE'
+  — один активный токен на семью
+end note
+
+note bottom of signing_keys
+  ровно один ключ ACTIVE;
+  NEXT/RETIRING публикуются в JWKS,
+  но не подписывают
+end note
+
+note bottom of outbox
+  без FK к identities — пишется
+  в одной транзакции с identity,
+  читается relay-горутиной;
+  partial index WHERE published_at IS NULL
+end note
+@enduml

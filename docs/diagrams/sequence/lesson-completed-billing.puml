@@ -1,0 +1,57 @@
+@startuml lesson-completed-billing
+title Завершение урока: захват холда и журнал прогресса
+
+participant "LiveKit" as lk
+participant "Core Education\n(lessons)" as core
+database "education_db" as edb
+queue "NATS JetStream" as nats
+participant "Billing\n(consumer)" as billing
+database "billing_db" as bdb
+participant "Core: reports\n(consumer)" as reports
+
+lk -> core: webhook room_finished
+group Транзакция (education_db)
+  core -> edb: UPDATE lessons SET status=COMPLETED
+  core -> edb: INSERT outbox('lesson.completed')
+end
+core -> nats: (outbox relay) publish lesson.completed
+
+par Billing: деньги
+  nats -> billing: deliver lesson.completed (durable)
+  group Транзакция (billing_db)
+    billing -> bdb: holds: ACTIVE -> CAPTURED (по reference_id)
+    billing -> bdb: ledger: debit студента / credit преподавателя
+    billing -> bdb: INSERT outbox('payment.captured')
+  end
+  billing -> nats: ack
+  note right of billing
+    идемпотентно: повторная доставка
+    на CAPTURED-холд — no-op
+  end note
+  billing -> nats: (relay) publish payment.captured
+  nats -> core: deliver payment.captured
+  core -> edb: пометить урок оплаченным
+else Reports: прогресс
+  nats -> reports: deliver lesson.completed (durable)
+  group Транзакция (education_db)
+    reports -> edb: INSERT processed_lessons(lesson_id)\nON CONFLICT DO NOTHING
+    alt урок уже обработан
+      reports -> nats: ack (no-op)
+    else первый раз
+      reports -> edb: счётчик пары студент×преподаватель +1
+      alt счётчик кратен 5
+        reports -> edb: INSERT запись журнала прогресса
+        reports -> edb: INSERT outbox('progress.milestone_reached')
+      end
+      reports -> nats: ack
+    end
+  end
+end
+
+note over nats
+  Консьюмеры независимы: отставание биллинга
+  не блокирует журнал прогресса, и наоборот.
+  At-least-once + идемпотентность = ничего не теряется
+  и не задваивается.
+end note
+@enduml

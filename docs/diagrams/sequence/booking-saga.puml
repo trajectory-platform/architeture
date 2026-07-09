@@ -1,0 +1,60 @@
+@startuml booking-saga
+title Booking-сага: бронирование слота с холдом средств
+
+actor "Student (SPA)" as spa
+participant "API Gateway" as gw
+participant "Core Education\n(booking)" as core
+database "education_db" as edb
+participant "Billing" as billing
+database "billing_db" as bdb
+queue "NATS JetStream" as nats
+
+spa -> gw: POST /bookings\nIdempotency-Key: K
+gw -> gw: валидация JWT (JWKS, локально)
+gw -> core: CreateBooking\nmetadata: idempotency-key=K, deadline
+
+group Транзакция №1 (education_db)
+  core -> edb: advisory lock (teacher_id)
+  core -> edb: INSERT bookings\nstatus=PENDING, time_range=tstzrange
+  note right of edb
+    EXCLUDE USING gist
+    (teacher_id WITH =, time_range WITH &&)
+    пересечение -> ошибка constraint
+  end note
+end
+
+alt слот пересекается
+  edb --> core: exclusion violation
+  core --> gw: FailedPrecondition (slot taken)
+  gw --> spa: 409 Conflict
+else слот свободен
+  core -> billing: PlaceHold(student, amount,\nreference=booking_id, key=K)
+  group Транзакция Billing (billing_db)
+    billing -> bdb: баланс = SUM(ledger) - активные холды
+    billing -> bdb: INSERT holds (idempotency_key=K UNIQUE)
+  end
+
+  alt недостаточно средств
+    billing --> core: ResourceExhausted
+    core -> edb: UPDATE bookings SET status=FAILED
+    core --> gw: ResourceExhausted
+    gw --> spa: 402 insufficient funds
+  else холд размещён
+    billing --> core: HoldPlaced(hold_id)
+    group Транзакция №2 (education_db)
+      core -> edb: UPDATE bookings SET status=CONFIRMED
+      core -> edb: INSERT outbox('booking.confirmed')
+    end
+    core --> gw: Booking{CONFIRMED}
+    gw --> spa: 201 Created
+    core -> nats: (outbox relay) publish booking.confirmed
+  else таймаут / исход неизвестен
+    note over core
+      Booking остаётся PENDING.
+      Reconciler повторяет PlaceHold с тем же K —
+      Billing вернёт сохранённый результат,
+      сага доводится до CONFIRMED или FAILED.
+    end note
+  end
+end
+@enduml

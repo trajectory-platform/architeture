@@ -1,0 +1,65 @@
+@startuml c2-containers
+!include <C4/C4_Container>
+
+title Trajectory — C2: Containers
+
+Person(student, "Student")
+Person(teacher, "Teacher")
+
+System_Boundary(trajectory, "Trajectory Platform") {
+    Container(spa, "Web App (SPA)", "React / TypeScript", "Календарь, бронирования, комната урока (Yjs-доска), чаты, биллинг")
+
+    Container(nginx, "Nginx", "Reverse proxy", "TLS-терминация; маршрутизация /api -> gateway, /ws -> realtime")
+
+    Container(gateway, "API Gateway", "Go", "REST-граница: валидация JWT (JWKS), rate limiting, трансляция REST -> gRPC, OpenAPI")
+    Container(auth, "Auth Service", "Go", "Идентичность: регистрация, login, refresh-токены, публикация JWKS")
+    Container(core, "Core Education Service", "Go", "Расписание, booking-сага, уроки (JoinLesson, вебхуки LiveKit), чаты, поддержка, отчёты, outbox")
+    Container(billing, "Billing Service", "Go", "Append-only ledger, холды (PlaceHold/Capture/Release), идемпотентность, outbox")
+    Container(realtime, "Realtime Service", "Go", "WebSocket-хаб: Yjs-relay (append+broadcast+replay), чат комнат, presence")
+
+    ContainerDb(pg_auth, "auth_db", "PostgreSQL", "identities, refresh_tokens, ключи")
+    ContainerDb(pg_edu, "education_db", "PostgreSQL", "bookings (tstzrange excl.), lessons, chats, messages, reports, outbox")
+    ContainerDb(pg_billing, "billing_db", "PostgreSQL", "ledger_entries, holds, outbox")
+    ContainerDb(pg_rt, "realtime_db", "PostgreSQL", "board_updates, board_snapshots")
+
+    ContainerDb(redis, "Redis", "Redis", "Кэш, presence, rate limiting, fan-out между инстансами realtime")
+    ContainerQueue(nats, "NATS JetStream", "NATS", "Durable-события: booking.*, lesson.*, payment.*, progress.*")
+    ContainerDb(minio, "MinIO", "S3-compatible", "Вложения, материалы уроков, архив досок (presigned URL)")
+}
+
+System_Ext(livekit, "LiveKit", "WebRTC SFU: видео, аудио, screen share")
+
+Rel(student, spa, "Использует", "HTTPS")
+Rel(teacher, spa, "Использует", "HTTPS")
+
+Rel(spa, nginx, "REST + WebSocket", "HTTPS / WSS")
+Rel(spa, livekit, "Медиа", "WebRTC")
+Rel(spa, minio, "Загрузка/скачивание файлов", "HTTPS, presigned URL")
+
+Rel(nginx, gateway, "/api/*", "HTTP")
+Rel(nginx, realtime, "/ws/*", "WebSocket")
+
+Rel(gateway, auth, "Login, Refresh", "gRPC")
+Rel(gateway, core, "Слоты, брони, уроки, чаты, отчёты", "gRPC")
+Rel(gateway, billing, "GetBalance, TopUp", "gRPC")
+
+Rel(core, billing, "PlaceHold (booking-сага, Idempotency-Key)", "gRPC")
+Rel(realtime, core, "SaveMessage, авторизация", "gRPC")
+
+Rel(core, nats, "publish через outbox / consume", "NATS")
+Rel(billing, nats, "publish через outbox / consume", "NATS")
+
+Rel(auth, pg_auth, "R/W", "SQL")
+Rel(core, pg_edu, "R/W", "SQL")
+Rel(billing, pg_billing, "R/W", "SQL")
+Rel(realtime, pg_rt, "append / replay лога доски", "SQL")
+
+Rel(gateway, redis, "Кэш JWKS, rate limiting", "RESP")
+Rel(realtime, redis, "Presence, fan-out (Pub/Sub)", "RESP")
+
+Rel(core, minio, "Выдача presigned URL", "S3 API")
+Rel(core, livekit, "Минт токенов, закрытие комнат", "Server SDK")
+Rel(livekit, core, "Вебхуки", "HTTPS")
+
+SHOW_LEGEND()
+@enduml

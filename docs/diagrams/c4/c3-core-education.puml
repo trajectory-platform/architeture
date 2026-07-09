@@ -1,0 +1,56 @@
+@startuml c3-core-education
+!include <C4/C4_Component>
+
+title Trajectory — C3: Core Education Service (components)
+
+Container(gateway, "API Gateway", "Go", "REST -> gRPC")
+Container(realtime, "Realtime Service", "Go")
+Container(billing, "Billing Service", "Go")
+ContainerQueue(nats, "NATS JetStream", "NATS")
+ContainerDb(pg_edu, "education_db", "PostgreSQL")
+ContainerDb(minio, "MinIO", "S3")
+System_Ext(livekit, "LiveKit", "WebRTC SFU")
+
+Container_Boundary(core, "Core Education Service") {
+    Component(grpc_api, "gRPC API (education.v1)", "Go, grpc-go", "Единая точка входа: интерсепторы OTel, auth-context, deadlines")
+
+    Component(scheduling, "scheduling", "Go package", "Доступность преподавателей, слоты, recurring-правила, календарь")
+    Component(booking, "booking", "Go package", "Booking-сага: advisory lock, tstzrange-constraint, PlaceHold, PENDING -> CONFIRMED/FAILED; reconciler зависших саг")
+    Component(lessons, "lessons", "Go package", "Жизненный цикл урока, JoinLesson (минт LiveKit-токена и room JWT), приём вебхуков LiveKit")
+    Component(chats, "chats", "Go package", "Личные/групповые/комнатные чаты: сообщения, вложения (MinIO), статусы прочтения, поиск")
+    Component(support, "support", "Go package", "Тикеты: open / pending / resolved / closed")
+    Component(reports, "reports", "Go package", "Заметки после уроков; консьюмер lesson.completed; журнал прогресса каждые 5 уроков")
+    Component(uploads, "uploads", "Go package", "Выдача presigned URL после проверки прав")
+    Component(outbox_relay, "outbox relay", "Go goroutine", "FOR UPDATE SKIP LOCKED -> publish в JetStream -> published_at")
+    Component(consumers, "event consumers", "Go goroutines", "Durable-консьюмеры: payment.captured, user.registered; идемпотентная обработка")
+}
+
+Rel(gateway, grpc_api, "Все клиентские операции", "gRPC")
+Rel(realtime, grpc_api, "SaveMessage, авторизация комнат", "gRPC")
+
+Rel(grpc_api, scheduling, "вызывает")
+Rel(grpc_api, booking, "вызывает")
+Rel(grpc_api, lessons, "вызывает")
+Rel(grpc_api, chats, "вызывает")
+Rel(grpc_api, support, "вызывает")
+Rel(grpc_api, reports, "вызывает")
+Rel(grpc_api, uploads, "вызывает")
+
+Rel(booking, billing, "PlaceHold (Idempotency-Key, deadline)", "gRPC")
+Rel(lessons, livekit, "Минт токенов, закрытие комнат", "Server SDK")
+Rel(livekit, lessons, "Вебхуки participant_*, room_finished", "HTTPS")
+Rel(uploads, minio, "Presigned URL", "S3 API")
+
+Rel(scheduling, pg_edu, "R/W", "SQL")
+Rel(booking, pg_edu, "R/W + outbox в одной транзакции", "SQL")
+Rel(lessons, pg_edu, "R/W + outbox", "SQL")
+Rel(chats, pg_edu, "R/W", "SQL")
+Rel(support, pg_edu, "R/W", "SQL")
+Rel(reports, pg_edu, "R/W + outbox", "SQL")
+
+Rel(outbox_relay, pg_edu, "читает outbox", "SQL")
+Rel(outbox_relay, nats, "publish", "NATS")
+Rel(nats, consumers, "deliver", "NATS")
+
+SHOW_LEGEND()
+@enduml

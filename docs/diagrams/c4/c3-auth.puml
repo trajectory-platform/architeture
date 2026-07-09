@@ -1,0 +1,46 @@
+@startuml c3-auth
+!include <C4/C4_Component>
+
+title Trajectory — C3: Auth Service (components)
+
+Container(gateway, "API Gateway", "Go", "REST -> gRPC; кэширует JWKS, валидирует access JWT локально")
+Container(realtime, "Realtime Service", "Go", "Кэширует JWKS (валидация room JWT)")
+ContainerDb(pg_auth, "auth_db", "PostgreSQL", "identities, credentials, refresh_tokens, signing_keys, outbox")
+ContainerDb(redis, "Redis", "Redis", "Блэклист jti отозванных access-токенов (опционально)")
+ContainerQueue(nats, "NATS JetStream", "NATS", "trajectory.user.registered")
+Container(core, "Core Education Service", "Go", "Консьюмер user.registered: создание профиля")
+
+Container_Boundary(auth, "Auth Service") {
+    Component(grpc_api, "gRPC API", "Go, transport/grpc (auth.v1)", "Register, Login, Refresh, Logout; deadline-aware")
+    Component(jwks_ep, "JWKS Endpoint", "Go, transport/http", "GET /.well-known/jwks.json: публичные ключи ACTIVE/NEXT/RETIRING")
+    Component(registrar, "Registrar", "Go, service -> repository/postgres", "Одна транзакция: identities + credentials + outbox(user.registered)")
+    Component(pwd, "Password Verifier", "Go, internal/infra/argon2id + repository/postgres", "argon2id: хэширование и проверка; dummy-hash при неизвестном email")
+    Component(issuer, "Token Issuer", "Go, internal/infra/token", "Подпись access JWT ACTIVE-ключом (kid в заголовке), клеймы sub/role/jti")
+    Component(refresh_mgr, "Refresh Manager", "Go, service -> repository/postgres", "Ротация (ROTATED -> новый ACTIVE в семье); reuse = отзыв всей семьи")
+    Component(key_mgr, "Key Manager", "Go, service -> repository/postgres + internal/infra/keycrypto", "Жизненный цикл ключей: NEXT -> ACTIVE -> RETIRING -> RETIRED")
+    Component(outbox_relay, "Outbox Relay", "Go, pkg/outbox (started by app)", "FOR UPDATE SKIP LOCKED -> publish -> ack -> published_at")
+}
+
+Rel(gateway, grpc_api, "Register / Login / Refresh / Logout", "gRPC")
+Rel(gateway, jwks_ep, "Обновление кэша ключей (TTL, kid-промах)", "HTTP")
+Rel(realtime, jwks_ep, "Обновление кэша ключей", "HTTP")
+
+Rel(grpc_api, registrar, "Register")
+Rel(grpc_api, pwd, "Login: проверка пароля")
+Rel(grpc_api, refresh_mgr, "Refresh / Logout")
+Rel(grpc_api, issuer, "Выдача access JWT")
+
+Rel(registrar, pg_auth, "INSERT identities, credentials, outbox (одна транзакция)", "SQL")
+Rel(pwd, pg_auth, "SELECT credentials", "SQL")
+Rel(refresh_mgr, pg_auth, "refresh_tokens: ротация, отзыв семьи", "SQL")
+Rel(refresh_mgr, redis, "Блэклист jti при отзыве семьи", "RESP")
+Rel(issuer, key_mgr, "Текущий ACTIVE-ключ")
+Rel(key_mgr, pg_auth, "signing_keys", "SQL")
+Rel(jwks_ep, key_mgr, "Публичные JWK")
+
+Rel(outbox_relay, pg_auth, "Неопубликованные строки outbox", "SQL")
+Rel(outbox_relay, nats, "publish user.registered", "NATS")
+Rel(nats, core, "user.registered (durable consumer)", "NATS")
+
+SHOW_LEGEND()
+@enduml

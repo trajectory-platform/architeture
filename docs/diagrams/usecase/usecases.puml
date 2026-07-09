@@ -1,0 +1,93 @@
+@startuml usecases
+title Trajectory — сценарии использования
+
+left to right direction
+skinparam packageStyle rectangle
+
+actor "Студент" as student
+actor "Преподаватель" as teacher
+actor "Админ" as admin
+actor "LiveKit" as livekit <<system>>
+
+rectangle "Trajectory" {
+
+  package "Расписание и бронирование" {
+    usecase "Задать доступность\n(вкл. recurring-слоты)" as UC_avail
+    usecase "Просмотреть свободные слоты" as UC_slots
+    usecase "Забронировать урок\n(разовый / регулярный)" as UC_book
+    usecase "Отменить / перенести урок" as UC_cancel
+    usecase "Просмотреть историю уроков" as UC_history
+  }
+
+  package "Биллинг" {
+    usecase "Пополнить баланс" as UC_topup
+    usecase "Просмотреть баланс\nи историю операций" as UC_balance
+    usecase "Холд / списание / возврат\n(автоматически)" as UC_hold
+  }
+
+  package "Урок (комната)" {
+    usecase "Войти в комнату урока" as UC_join
+    usecase "Совместно работать на доске\n(рисование, текст, фигуры,\nфайлы, undo/redo)" as UC_board
+    usecase "Видео/аудио, screen share" as UC_media
+    usecase "Чат комнаты" as UC_roomchat
+    usecase "Завершить урок" as UC_end
+  }
+
+  package "Чаты вне урока" {
+    usecase "Личный чат\n(история, файлы, прочтения)" as UC_dm
+    usecase "Групповой чат\n(создание, участники)" as UC_group
+    usecase "Поиск по сообщениям" as UC_search
+  }
+
+  package "Поддержка" {
+    usecase "Создать тикет" as UC_ticket
+    usecase "Обработать тикет\n(open/pending/resolved/closed)" as UC_ticket_admin
+  }
+
+  package "Отчёты и прогресс" {
+    usecase "Заметка / отчёт после урока" as UC_note
+    usecase "Журнал прогресса\n(автообновление каждые 5 уроков)" as UC_journal
+    usecase "Просмотреть свой прогресс" as UC_progress
+  }
+}
+
+student --> UC_slots
+student --> UC_book
+student --> UC_cancel
+student --> UC_history
+student --> UC_topup
+student --> UC_balance
+student --> UC_join
+student --> UC_board
+student --> UC_media
+student --> UC_roomchat
+student --> UC_dm
+student --> UC_group
+student --> UC_search
+student --> UC_ticket
+student --> UC_progress
+
+teacher --> UC_avail
+teacher --> UC_cancel
+teacher --> UC_history
+teacher --> UC_balance
+teacher --> UC_join
+teacher --> UC_board
+teacher --> UC_media
+teacher --> UC_roomchat
+teacher --> UC_end
+teacher --> UC_dm
+teacher --> UC_group
+teacher --> UC_search
+teacher --> UC_ticket
+teacher --> UC_note
+
+admin --> UC_ticket_admin
+
+UC_book ..> UC_hold : <<include>>\nрезерв средств
+UC_cancel ..> UC_hold : <<include>>\nвозврат резерва
+UC_end ..> UC_hold : <<include>>\nсписание
+UC_end ..> UC_journal : <<include>>\nинкремент прогресса
+UC_join ..> UC_media : <<include>>
+UC_media <-- livekit
+@enduml

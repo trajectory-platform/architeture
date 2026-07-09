@@ -1,0 +1,47 @@
+@startuml lesson-join
+title Вход в комнату урока: токены, WebSocket, WebRTC
+
+actor "Participant (SPA)" as spa
+participant "API Gateway" as gw
+participant "Core Education\n(lessons)" as core
+participant "Realtime Service" as rt
+participant "LiveKit (SFU)" as lk
+
+spa -> gw: POST /lessons/{id}/join
+gw -> gw: валидация access JWT (JWKS)
+gw -> core: JoinLesson(lesson_id)
+
+core -> core: проверка: user принадлежит уроку,\nтекущее время в окне урока
+alt не участник / вне окна
+  core --> gw: PermissionDenied
+  gw --> spa: 403
+else допущен
+  core -> core: минт room JWT (lesson_id, user_id, role, TTL~1м)
+  core -> core: минт LiveKit token (server SDK,\ngrants только на эту комнату)
+  core --> gw: {room_jwt, livekit_token, ws_url, livekit_url}
+  gw --> spa: 200
+
+  par WebSocket: доска, чат, presence
+    spa -> rt: WSS /rooms/{id}?token=room_jwt
+    rt -> rt: валидация room JWT (локально)
+    rt -> rt: membership/presence в Redis
+    spa -> rt: board.sync_request (state vector)
+    rt --> spa: board.sync_response (snapshot + tail)
+  else WebRTC: медиа
+    spa -> lk: connect(livekit_token)
+    lk -> core: webhook participant_joined
+    note right of core
+      посещаемость, фактический старт,
+      outbox 'lesson.started'
+    end note
+  end
+end
+
+== Завершение урока ==
+spa -> gw: POST /lessons/{id}/end (teacher)
+gw -> core: EndLesson
+core -> lk: close room (server API)
+lk -> core: webhook room_finished
+core -> core: status=COMPLETED + outbox 'lesson.completed'
+note right of core: дальше — см. lesson-completed-billing.puml
+@enduml

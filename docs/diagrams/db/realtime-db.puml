@@ -1,0 +1,46 @@
+@startuml realtime-db
+title Trajectory — ER: realtime_db (Realtime Service)
+
+hide circle
+skinparam linetype ortho
+
+entity "board_updates" as updates {
+  * lesson_id : uuid <<PK>>  -- агрегат Core, без cross-DB FK
+  * seq : bigint <<PK>>  -- монотонный per-room счётчик
+  --
+  * update : bytea  -- opaque Yjs update
+  * created_at : timestamptz
+}
+
+entity "board_snapshots" as snapshots {
+  * lesson_id : uuid <<PK>>
+  * upto_seq : bigint <<PK>>  -- покрывает updates с seq <= upto_seq
+  --
+  * snapshot : bytea  -- Y.encodeStateAsUpdate
+  * created_at : timestamptz
+}
+
+updates }o..o| snapshots : "компакция (Node-сайдкар):\nY.mergeUpdates(snapshot, tail)\n-> новый snapshot;\nстарые updates -> delete\nили архив в MinIO"
+
+note bottom of updates
+  seq выдаёт БД при append:
+  COALESCE(MAX(seq), 0) + 1 в транзакции;
+  гонка инстансов -> PK-конфликт + retry.
+  Сначала персист, потом fan-out (Redis)
+end note
+
+note bottom of snapshots
+  sync_response = последний snapshot
+  + updates WHERE seq > upto_seq;
+  снапшот — оптимизация чтения:
+  потеря лечится replay'ем полного лога
+end note
+
+note as ephemeral
+  Вне Postgres (эфемерное, Redis):
+  room:{id}:members — TTL-ключи presence;
+  Pub/Sub канал per-room — fan-out.
+  Потеря Redis = переподключения,
+  не потеря данных
+end note
+@enduml

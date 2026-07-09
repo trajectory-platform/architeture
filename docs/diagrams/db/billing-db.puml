@@ -1,0 +1,67 @@
+@startuml billing-db
+title Trajectory — ER: billing_db (Billing Service)
+
+hide circle
+skinparam linetype ortho
+
+entity "ledger_entries" as ledger {
+  * id : bigserial <<PK>>
+  --
+  * account_id : uuid  -- identity из Auth или счёт платформы
+  * amount : bigint  -- минорные единицы; >0 credit, <0 debit
+  * entry_type : text  -- topup | capture | refund | payout
+  reference_id : uuid  -- booking / hold (опаковый)
+  * created_at : timestamptz
+}
+
+entity "holds" as holds {
+  * id : uuid <<PK>>
+  --
+  * account_id : uuid
+  * amount : bigint  -- CHECK (amount > 0)
+  * reference_id : uuid  -- booking_id в Core (без FK)
+  * status : text  -- ACTIVE | CAPTURED | RELEASED
+  * idempotency_key : text <<UQ>>
+  * created_at : timestamptz
+}
+
+entity "idempotency_keys" as idem {
+  * key : text <<PK>>  -- из gRPC metadata
+  --
+  * method : text  -- TopUp | ...
+  * request_hash : bytea  -- другое тело -> AlreadyExists
+  * response : bytea  -- сохранённый protobuf-ответ
+  * created_at : timestamptz
+}
+
+entity "outbox" as outbox {
+  * id : bigserial <<PK>>
+  --
+  * aggregate_id : uuid  -- hold_id
+  * subject : text  -- trajectory.payment.captured, hold.released
+  * payload : bytea  -- protobuf
+  * created_at : timestamptz
+  published_at : timestamptz
+}
+
+holds ||..o{ ledger : "capture/release порождает\nстроки (reference_id,\nбез FK — леджер переживает\nлюбые правки holds)"
+
+note bottom of ledger
+  append-only: роль сервиса без UPDATE/DELETE;
+  баланс = SUM(amount) по account_id,
+  доступный = SUM(ledger) - SUM(holds ACTIVE);
+  корректировки — компенсирующей строкой (refund)
+end note
+
+note bottom of holds
+  терминальные статусы финальны;
+  повторная доставка события
+  на CAPTURED/RELEASED — no-op
+end note
+
+note right of idem
+  для операций без таблицы-агрегата;
+  PlaceHold идемпотентен через
+  holds.idempotency_key UNIQUE
+end note
+@enduml

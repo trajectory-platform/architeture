@@ -1,0 +1,50 @@
+@startuml c3-api-gateway
+!include <C4/C4_Component>
+
+title Trajectory — C3: API Gateway (components)
+
+Container(nginx, "Nginx", "Reverse proxy", "TLS-терминация; /api/* -> Gateway")
+Container(spa, "Web App (SPA)", "React / TypeScript", "TypeScript-клиент, сгенерированный из OpenAPI")
+Container(auth, "Auth Service", "Go", "auth.v1 + JWKS endpoint")
+Container(core, "Core Education Service", "Go", "education.v1")
+Container(billing, "Billing Service", "Go", "billing.v1")
+ContainerDb(redis, "Redis", "Redis", "JWKS-кэш, rate limiting, блэклист jti")
+
+Container_Boundary(gateway, "API Gateway (stateless, ×N реплик)") {
+    Component(router, "HTTP Router", "Go, chi", "REST-маршруты из OpenAPI; /metrics, health; CORS")
+    Component(otel_mw, "OTel Middleware", "Go middleware", "Здесь рождается trace_id; контекст -> gRPC metadata")
+    Component(auth_mw, "Auth Middleware", "Go middleware", "Bearer JWT: локальная проверка подписи и клеймов; identity -> metadata")
+    Component(jwks_cache, "JWKS Cache", "Go package", "in-memory + Redis; обновление по TTL и kid-промаху")
+    Component(ratelimit, "Rate Limiter", "Go middleware", "IP для анонимных, user_id для авторизованных; 429 + Retry-After; fail-open")
+    Component(idem_mw, "Idempotency Forwarder", "Go middleware", "Заголовок Idempotency-Key -> gRPC metadata (без проверки — её делают владельцы)")
+    Component(cookie, "Cookie Handler", "Go package", "/auth/*: refresh из httpOnly cookie <-> поле gRPC; Set-Cookie / сброс")
+    Component(grpc_clients, "gRPC Clients", "Go, grpc-go", "Клиенты auth/core/billing: deadline на вызов, retry только идемпотентных, OTel-интерсепторы")
+    Component(err_mapper, "Error Mapper", "Go package", "gRPC-коды -> HTTP + единый JSON-конверт {code, message}")
+    Component(openapi, "OpenAPI Spec", "Go, embed", "Публикация спеки; источник TS-клиента фронтенда")
+}
+
+Rel(spa, nginx, "REST", "HTTPS")
+Rel(nginx, router, "/api/*", "HTTP")
+
+Rel(router, otel_mw, "все запросы")
+Rel(otel_mw, ratelimit, "")
+Rel(ratelimit, auth_mw, "")
+Rel(auth_mw, idem_mw, "")
+Rel(idem_mw, grpc_clients, "вызов целевого сервиса")
+
+Rel(auth_mw, jwks_cache, "ключ по kid")
+Rel(jwks_cache, auth, "GET /.well-known/jwks.json (TTL, kid-промах)", "HTTP")
+Rel(jwks_cache, redis, "общий кэш ключей", "RESP")
+Rel(auth_mw, redis, "блэклист jti (опционально)", "RESP")
+Rel(ratelimit, redis, "счётчики с TTL", "RESP")
+
+Rel(router, cookie, "/auth/refresh, /auth/logout")
+Rel(cookie, grpc_clients, "refresh как поле запроса")
+
+Rel(grpc_clients, auth, "Register, Login, Refresh, Logout", "gRPC")
+Rel(grpc_clients, core, "слоты, брони, уроки, чаты, тикеты, отчёты, профили, uploads", "gRPC")
+Rel(grpc_clients, billing, "GetBalance, TopUp", "gRPC")
+Rel(grpc_clients, err_mapper, "ошибки -> HTTP")
+
+SHOW_LEGEND()
+@enduml

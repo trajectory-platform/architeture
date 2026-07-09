@@ -1,0 +1,52 @@
+@startuml auth-refresh-rotation
+title Ротация refresh-токена и детект кражи (token reuse)
+
+actor "User (SPA)" as spa
+participant "API Gateway" as gw
+participant "Auth Service" as auth
+database "auth_db" as adb
+database "Redis" as redis
+
+spa -> gw: POST /auth/refresh\nCookie: refresh (httpOnly)
+gw -> auth: Refresh(token)\nmetadata: deadline
+
+auth -> adb: SELECT refresh_tokens\nWHERE token_hash = sha256(token)
+
+alt токен не найден
+  auth --> gw: Unauthenticated
+  gw --> spa: 401 + сброс cookie
+else status = ACTIVE, не истёк
+  group Транзакция (auth_db)
+    auth -> adb: UPDATE старый SET status=ROTATED,\nreplaced_by=new_id
+    auth -> adb: INSERT новый refresh\n(тот же family_id, status=ACTIVE)
+    note right of adb
+      partial unique index
+      (family_id) WHERE status='ACTIVE'
+      — гонка двух Refresh c одним токеном
+      невозможна на уровне БД
+    end note
+  end
+  auth -> auth: подпись нового access JWT\n(текущий ACTIVE-ключ)
+  auth --> gw: TokenPair{access, refresh}
+  gw --> spa: 200\nновый refresh в httpOnly cookie
+else status = ROTATED | REVOKED — повторное использование
+  note over auth
+    Уже ротированный токен предъявлен снова =
+    признак кражи: неизвестно, у кого «живая»
+    половина цепочки — отзываем всю семью.
+  end note
+  group Транзакция (auth_db)
+    auth -> adb: UPDATE refresh_tokens SET status=REVOKED\nWHERE family_id = :family
+  end
+  auth -> redis: блэклист jti живых access-токенов\n(TTL = остаток жизни access)
+  auth --> gw: Unauthenticated
+  gw --> spa: 401 + сброс cookie\n(пользователь логинится заново)
+else истёк (expires_at < now)
+  auth --> gw: Unauthenticated
+  gw --> spa: 401 + сброс cookie
+  note right of gw
+    Протухание — не кража:
+    семья не отзывается
+  end note
+end
+@enduml

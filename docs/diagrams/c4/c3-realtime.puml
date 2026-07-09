@@ -1,0 +1,39 @@
+@startuml c3-realtime
+!include <C4/C4_Component>
+
+title Trajectory — C3: Realtime Service (components)
+
+Container(spa, "Web App (SPA)", "React", "Yjs-клиент, чат, presence")
+Container(core, "Core Education Service", "Go")
+ContainerDb(pg_rt, "realtime_db", "PostgreSQL", "board_updates, board_snapshots")
+ContainerDb(redis, "Redis", "Redis", "Presence, Pub/Sub fan-out")
+Container(compactor, "Board Compactor", "Node.js sidecar", "Y.mergeUpdates: snapshot + tail -> новый snapshot (по порогу)")
+
+Container_Boundary(realtime, "Realtime Service (×N инстансов, равнозначны)") {
+    Component(ws_hub, "WS Hub", "Go, gorilla/nhooyr", "Upgrade, валидация room JWT (JWKS), envelope-роутинг по типам сообщений")
+    Component(room_registry, "Room Registry", "Go package", "Membership/presence в Redis (TTL), подписка на каналы комнат")
+    Component(board, "Board Log", "Go package", "append(seq, blob) -> persist -> fan-out; sync_request -> snapshot + tail")
+    Component(chat_fwd, "Chat Forwarder", "Go package", "Немедленный broadcast, затем асинхронный персист в Core (client message_id)")
+    Component(presence, "Presence", "Go package", "Курсоры, инструменты, online-статусы; best-effort")
+}
+
+Rel(spa, ws_hub, "board.update / chat.message / presence.update / sync_request", "WSS")
+
+Rel(ws_hub, room_registry, "join/leave")
+Rel(ws_hub, board, "board.*")
+Rel(ws_hub, chat_fwd, "chat.message")
+Rel(ws_hub, presence, "presence.update")
+
+Rel(board, pg_rt, "append update; читает snapshot + tail", "SQL")
+Rel(board, redis, "publish в канал комнаты", "Pub/Sub")
+Rel(redis, board, "доставка апдейтов другим инстансам", "Pub/Sub")
+
+Rel(room_registry, redis, "TTL-ключи membership/presence", "RESP")
+Rel(presence, redis, "publish/subscribe", "Pub/Sub")
+
+Rel(chat_fwd, core, "SaveMessage (идемпотентно)", "gRPC")
+
+Rel(compactor, pg_rt, "читает snapshot+tail, пишет новый snapshot", "SQL")
+
+SHOW_LEGEND()
+@enduml

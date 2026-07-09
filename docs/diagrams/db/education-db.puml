@@ -1,0 +1,213 @@
+@startuml education-db
+title Trajectory — ER: education_db (Core Education Service)
+
+hide circle
+skinparam linetype ortho
+
+' ---------- profiles ----------
+
+entity "profiles" as profiles {
+  * user_id : uuid <<PK>>  -- identity в Auth, без cross-DB FK
+  --
+  * role : text  -- student | teacher
+  * display_name : text
+  bio : text
+  avatar_key : text  -- объект в MinIO
+  * timezone : text
+  * created_at : timestamptz
+}
+
+entity "teacher_profiles" as teacher_profiles {
+  * user_id : uuid <<PK, FK>>
+  --
+  * subjects : text[]
+  experience_years : int
+  * price_per_lesson : bigint  -- минорные единицы
+  headline : text
+}
+
+' ---------- scheduling ----------
+
+entity "availability_rules" as availability_rules {
+  * id : uuid <<PK>>
+  --
+  * teacher_id : uuid
+  * weekday : smallint  -- 0..6
+  * start_time : time
+  * end_time : time
+  * valid_from : date
+  valid_to : date
+}
+
+entity "slots" as slots {
+  * id : uuid <<PK>>
+  --
+  * teacher_id : uuid
+  * time_range : tstzrange
+  source_rule : uuid <<FK>>  -- NULL = разовый
+  * status : text  -- OPEN | CLOSED
+}
+
+entity "recurring_rules" as recurring_rules {
+  * id : uuid <<PK>>
+  --
+  * teacher_id : uuid
+  * student_id : uuid
+  * weekday : smallint
+  * start_time : time
+  * duration : interval
+  * valid_from : date
+  valid_until : date
+  * status : text  -- ACTIVE | CANCELLED
+}
+
+' ---------- booking / lessons ----------
+
+entity "bookings" as bookings {
+  * id : uuid <<PK>>
+  --
+  * teacher_id : uuid
+  * student_id : uuid
+  * time_range : tstzrange
+  * status : text  -- PENDING | CONFIRMED | CANCELLED | FAILED
+  recurring_rule : uuid <<FK>>
+  idempotency_key : text <<UQ>>
+  * created_at : timestamptz
+}
+
+entity "lessons" as lessons {
+  * id : uuid <<PK>>
+  --
+  * booking_id : uuid <<UQ, FK>>
+  * teacher_id : uuid
+  * student_id : uuid
+  * time_range : tstzrange
+  * status : text  -- SCHEDULED | IN_PROGRESS | COMPLETED | CANCELLED | NO_SHOW
+  started_at : timestamptz  -- вебхук participant_joined
+  ended_at : timestamptz  -- room_finished
+  paid_at : timestamptz  -- проекция payment.captured
+  livekit_room : text
+}
+
+entity "lesson_attendance" as lesson_attendance {
+  * lesson_id : uuid <<PK, FK>>
+  * user_id : uuid <<PK>>
+  * joined_at : timestamptz <<PK>>
+  --
+  left_at : timestamptz
+}
+
+' ---------- chats / support ----------
+
+entity "chats" as chats {
+  * id : uuid <<PK>>
+  --
+  * kind : text  -- direct | group | lesson_room | support
+  lesson_id : uuid  -- для lesson_room
+  title : text
+}
+
+entity "chat_members" as chat_members {
+  * chat_id : uuid <<PK, FK>>
+  * user_id : uuid <<PK>>
+  --
+  * role : text  -- member | owner | admin
+  last_read_at : timestamptz
+}
+
+entity "messages" as messages {
+  * id : uuid <<PK>>  -- client-generated: ретраи без дублей
+  --
+  * chat_id : uuid <<FK>>
+  * sender_id : uuid
+  body : text  -- tsvector-индекс (поиск)
+  attachment : text  -- объект в MinIO
+  * created_at : timestamptz
+}
+
+entity "support_tickets" as support_tickets {
+  * chat_id : uuid <<PK, FK>>
+  --
+  * status : text  -- open | pending | resolved | closed
+  assignee_id : uuid  -- admin
+  * created_at : timestamptz
+}
+
+' ---------- reports / progress ----------
+
+entity "lesson_notes" as lesson_notes {
+  * id : uuid <<PK>>
+  --
+  * lesson_id : uuid <<FK>>
+  * teacher_id : uuid
+  * body : text
+  * created_at : timestamptz
+}
+
+entity "progress_processed_lessons" as processed {
+  * lesson_id : uuid <<PK>>
+  --
+  * processed_at : timestamptz
+}
+
+entity "progress_counters" as progress_counters {
+  * teacher_id : uuid <<PK>>
+  * student_id : uuid <<PK>>
+  --
+  * completed_count : int
+}
+
+entity "progress_journal" as progress_journal {
+  * id : uuid <<PK>>
+  --
+  * teacher_id : uuid
+  * student_id : uuid
+  * milestone : int  -- 5, 10, 15...
+  summary : text
+  * created_at : timestamptz
+}
+
+' ---------- outbox ----------
+
+entity "outbox" as outbox {
+  * id : bigserial <<PK>>
+  --
+  * aggregate_id : uuid
+  * subject : text  -- trajectory.booking.confirmed, ...
+  * payload : bytea  -- protobuf
+  * created_at : timestamptz
+  published_at : timestamptz
+}
+
+' ---------- relations ----------
+
+profiles ||--o| teacher_profiles
+availability_rules ||--o{ slots : source_rule
+recurring_rules ||--o{ bookings : recurring_rule
+bookings ||--o| lessons : "1:0..1\n(урок при CONFIRMED)"
+lessons ||--o{ lesson_attendance
+lessons ||--o{ lesson_notes
+chats ||--o{ chat_members
+chats ||--o{ messages
+chats ||--o| support_tickets : "kind = 'support'"
+
+note bottom of bookings
+  EXCLUDE USING gist
+  (teacher_id WITH =, time_range WITH &&)
+  WHERE status IN ('PENDING','CONFIRMED')
+  — двойная бронь невозможна при любых гонках
+end note
+
+note bottom of progress_journal
+  UNIQUE (teacher_id, student_id, milestone);
+  консьюмер lesson.completed идемпотентен:
+  processed_lessons ON CONFLICT DO NOTHING
+  + инкремент + milestone в одной транзакции
+end note
+
+note bottom of profiles
+  teacher_id / student_id / user_id / sender_id
+  во всех таблицах -> profiles.user_id (identity в Auth);
+  FK на profiles опущены на диаграмме для читаемости
+end note
+@enduml

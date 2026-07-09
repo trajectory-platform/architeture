@@ -1,0 +1,43 @@
+@startuml whiteboard-sync
+title Синхронизация вайтборда: апдейт, fan-out, reconnect
+
+actor "Client A\n(Yjs)" as a
+actor "Client B\n(Yjs)" as b
+participant "Realtime #1" as rt1
+participant "Realtime #2" as rt2
+database "realtime_db\n(board_updates,\nboard_snapshots)" as db
+queue "Redis Pub/Sub\n(канал комнаты)" as redis
+
+== Обычный апдейт ==
+a -> a: штрих на доске ->\nYjs кодирует инкрементальный update (bytes)
+a -> rt1: board.update {blob}
+rt1 -> db: INSERT board_updates (lesson_id, seq, blob)
+note right of db: сначала персист, потом fan-out —\nувиденный апдейт уже не потеряется
+rt1 -> redis: publish(room, blob)
+redis -> rt2: deliver
+rt2 -> b: board.update {blob}
+b -> b: Y.applyUpdate — состояние сходится
+
+== Reconnect клиента B ==
+b -> b: обрыв сети; локальные правки копятся офлайн
+b -> rt2: WSS reconnect (room JWT)\nboard.sync_request {state vector}
+rt2 -> db: SELECT последний snapshot\n+ updates WHERE seq > upto_seq
+rt2 --> b: board.sync_response {snapshot + tail}
+note right of b
+  сервер шлёт надмножество (не диффает блобы);
+  Yjs идемпотентно отбрасывает уже применённое
+end note
+b -> rt2: board.update {офлайн-правки}
+note right of b: конфликты разрешает CRDT на клиентах
+rt2 -> db: append
+rt2 -> redis: publish
+redis -> rt1: deliver
+rt1 -> a: board.update
+
+== Компакция (фон) ==
+participant "Compactor\n(Node sidecar)" as comp
+comp -> db: snapshot + tail (по порогу N апдейтов)
+comp -> comp: Y.mergeUpdates
+comp -> db: INSERT board_snapshots (upto_seq)
+note right of comp: снапшот — оптимизация чтения;\nкорректность не зависит от него
+@enduml
