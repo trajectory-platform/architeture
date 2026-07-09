@@ -1,0 +1,27 @@
+# Binaries and build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/backend/bin/
+/backend/dist/
+
+# Test artifacts
+*.test
+*.out
+coverage.*
+
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
