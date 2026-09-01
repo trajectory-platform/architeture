@@ -13,7 +13,7 @@ In:
 - `deploy/docker-compose.yml`: finalize `auth` service — env from `.env`, `depends_on` with `condition: service_healthy` (postgres-auth, nats), healthcheck hitting `/readyz`, restart policy, resource notes. Redis optional → auth must start fine without it (blacklist disabled).
 - `.env.example`: every `AUTH_*` var with safe dev defaults and comments; KEK generation one-liner documented.
 - Smoke script `deploy/smoke/auth.sh` (bash; runs in CI and locally): wait for healthy → `grpcurl` Register → Login → Refresh → reuse-detect (expect failure) → Logout → fetch JWKS; assert outbox drained (depth metric = 0) and `user.registered` visible via `nats` CLI consumer peek.
-- `services/auth/README.md`: how to run, env reference table, smoke instructions, links to [auth.md](../../../services/auth.md) and the [plan](../README.md).
+- `auth-service/README.md`: how to run, env reference table, smoke instructions, links to [auth.md](../../../services/auth.md) and the [plan](../README.md).
 - Prometheus scrape config in `deploy/` includes auth `/metrics`.
 
 Out: staging/prod manifests, TLS (Nginx terminates at edge; auth not exposed), Gateway wiring.

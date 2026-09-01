@@ -35,6 +35,6 @@ Out: education/billing protos (other services' plans), gateway REST mapping.
 ## Acceptance criteria
 
 - [ ] `buf lint` clean; `buf generate` deterministic (re-run produces no diff).
-- [ ] Generated Go stubs compile and are importable from `services/auth` via workspace.
+- [ ] Generated Go stubs compile and are importable from `auth-service` through a versioned `contracts` module dependency.
 - [ ] CI fails on a deliberately breaking change (verify once locally, don't commit).
 - [ ] No floats, no required-feeling optionals; field numbering leaves room (reserve nothing yet, start clean).

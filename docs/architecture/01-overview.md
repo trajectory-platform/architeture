@@ -38,7 +38,7 @@ Trajectory — платформа для индивидуальных онлай
 
 ## Архитектурные принципы
 
-1. **Пять сервисов — максимум для MVP.** API Gateway, Auth, Billing, Core Education, Realtime. Чаты, нотификации и отчёты — пакеты внутри Core с чистыми внутренними границами, не отдельные сервисы ([ADR-001](../adr/ADR-001-microservices-granularity.md)).
+1. **Шесть сервисов для MVP.** API Gateway, Auth, Billing, Core Education, Realtime и Notification. Чаты и отчёты остаются пакетами внутри Core; Notification выделен из-за внешних провайдеров, ретраев и независимого профиля нагрузки ([ADR-001](../adr/ADR-001-microservices-granularity.md)).
 2. **Каждый сервис владеет своими данными.** Отдельные базы Postgres, никаких cross-service join. Доступ к чужим данным — только через API владельца или события.
 3. **gRPC east-west, REST north-south.** Клиент никогда не говорит по gRPC напрямую ([ADR-004](../adr/ADR-004-grpc-internal-rest-edge.md)).
 4. **Синхронно — когда нужен ответ сейчас, асинхронно — когда это факт.** gRPC для запрос/ответ, JetStream для событий (`booking.confirmed`, `lesson.completed`, ...). Публикация — только через transactional outbox ([ADR-003](../adr/ADR-003-nats-jetstream.md)).

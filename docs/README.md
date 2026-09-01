@@ -11,7 +11,7 @@
 | Документ | Содержание |
 |---|---|
 | [01 — Обзор системы](architecture/01-overview.md) | Цели, ключевые инженерные вызовы, стек, архитектурные принципы |
-| [02 — Сервисы и владение данными](architecture/02-services.md) | 5 микросервисов: зоны ответственности, владение данными, границы |
+| [02 — Сервисы и владение данными](architecture/02-services.md) | 6 сервисов: зоны ответственности, владение данными, границы |
 | [03 — Межсервисное взаимодействие](architecture/03-communication.md) | gRPC (sync) vs NATS JetStream (async), outbox, идемпотентность, трассировка |
 | [04 — Саги и консистентность](architecture/04-sagas-and-consistency.md) | Booking-сага, отмена/завершение урока, recurring-бронирования, журнал прогресса |
 | [05 — Realtime и вайтборд](architecture/05-realtime-whiteboard.md) | CRDT-синхронизация (Yjs relay на Go), протокол reconnect, LiveKit join flow |
@@ -30,12 +30,14 @@
 | [Core Education Service](services/core-education.md) | Предметное ядро: расписание, booking-сага, уроки, чаты, поддержка, отчёты, профили |
 | [Billing Service](services/billing.md) | Деньги: append-only ledger, холды, идемпотентность |
 | [Realtime Service](services/realtime.md) | WebSocket-хаб: Yjs-relay, чат комнат, presence; почти stateless |
+| [Notification Service](services/notification.md) | Настройки, inbox и асинхронная доставка in-app/email/push |
 
 ### Архитектурные решения (ADR)
 
 | ADR | Решение |
 |---|---|
-| [ADR-001](adr/ADR-001-microservices-granularity.md) | Гранулярность: 5 сервисов, чаты/отчёты/нотификации — внутри Core |
+| [ADR-001](adr/ADR-001-microservices-granularity.md) | Гранулярность: 6 сервисов; чаты и отчёты — внутри Core, нотификации — отдельный сервис |
+| [ADR-005](adr/ADR-005-architecture-business-rules.md) | Границы публичного API и контрактные инварианты |
 | [ADR-002](adr/ADR-002-crdt-sync-path-a.md) | CRDT-синхронизация: Go relay с персистентностью (vs Hocuspocus) |
 | [ADR-003](adr/ADR-003-nats-jetstream.md) | Шина событий: NATS JetStream + transactional outbox (vs Redis Pub/Sub) |
 | [ADR-004](adr/ADR-004-grpc-internal-rest-edge.md) | gRPC внутри, REST на границе; контракты в `proto/` под buf |

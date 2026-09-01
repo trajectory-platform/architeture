@@ -4,55 +4,35 @@ Engineering guide for implementing Trajectory services. Written for both humans 
 
 > Repo documentation prose is in Russian (see [docs/README.md — Конвенции](../README.md)); engineering artifacts (this file, task plans, code, comments, commit messages) are in English.
 
-## 1. Repository layout (monorepo)
+## 1. Repository layout (multi-repo)
 
 ```
-trajectory/
-├── proto/                          # buf module — ALL gRPC & event contracts (single source of truth)
-│   ├── buf.yaml
-│   ├── buf.gen.yaml
-│   └── trajectory/
-│       ├── auth/v1/auth.proto
-│       ├── education/v1/*.proto
-│       ├── billing/v1/billing.proto
-│       └── events/v1/events.proto  # JetStream event payloads — also protobuf
-├── gen/                            # generated code, committed; own Go module `trajectory/gen`
-│   └── go/trajectory/...           # output of `buf generate`; NEVER edit by hand
-├── pkg/                            # shared Go module `trajectory/pkg` — cross-service libraries only
-│   ├── logger/                     # log/slog setup (JSON, service field, trace_id, ctx helpers)
-│   ├── grpcx/                      # client/server interceptors: OTel, logging, recovery, deadline guard
-│   ├── postgres/                   # pgx pool constructor, tx manager helper
-│   ├── outbox/                     # outbox relay (FOR UPDATE SKIP LOCKED → JetStream publish → ack)
-│   ├── natsx/                      # JetStream connection helper
-│   └── otelx/                      # tracer/meter provider bootstrap
-├── services/
-│   ├── auth/                       # Go module `trajectory/services/auth`
-│   ├── gateway/
-│   ├── core/
-│   ├── billing/
-│   └── realtime/
-├── deploy/
-│   ├── docker-compose.yml          # full local stack
-│   └── nginx/
-├── docs/                           # architecture docs, ADRs, diagrams, plans
-├── go.work                         # workspace: gen, pkg, services/*
-├── .golangci.yml                   # single lint config for the whole repo
-└── Makefile                        # generate, lint, test, migrate, compose targets
+trajectory/                         # workspace, not a Git monorepo
+├── architecture/                   # documentation/ADR/diagrams repository
+├── contracts/                      # buf + OpenAPI source and generated Go module
+├── auth-service/                   # standalone Go service repository
+├── api-gateway/                    # standalone Go service repository
+├── core-education-service/         # standalone Go service repository
+├── billing-service/                # standalone Go service repository
+├── realtime-service/               # standalone Go service repository
+├── notification-service/           # standalone Go service repository
+├── platform-go/                    # optional, versioned shared technical libraries only
+└── deploy/                         # deployment manifests and pinned image versions
 ```
 
 Rules:
 
-- **One Go module per service** + shared `pkg/` + `gen/`. Tied together with `go.work`. A service never imports another service's `internal/`.
-- **A service's own packages live under `internal/`** so they cannot be imported across service boundaries. Genuinely shared infrastructure (logger, pgx pool, otel) lives in the shared `pkg/` module instead — never a service's domain logic.
-- **`pkg/` is for genuinely shared infrastructure only.** If only one service uses it, it belongs in that service's `internal/`.
-- **`proto/` is the only place contracts live.** No hand-written request/response types crossing service boundaries. `buf lint` + `buf breaking` gate CI ([ADR-004](../adr/ADR-004-grpc-internal-rest-edge.md)).
+- **Один репозиторий и Go-модуль на сервис.** Сервис никогда не импортирует другой сервис или его `internal/`; локальный `go.work` не является частью продукта и не нужен для сборки CI.
+- **`contracts` — единственное место межсервисных контрактов.** Он публикует versioned Go-модуль с кодогенерацией. Сервисы обновляют зависимость явно, а `buf lint` + `buf breaking` и OpenAPI lint/diff работают в CI `contracts` ([ADR-004](../adr/ADR-004-grpc-internal-rest-edge.md)).
+- **Общие библиотеки — только в отдельном versioned `platform-go` и только для технического кода.** Если библиотекой пользуется один сервис, она остаётся в его `internal/`; доменная логика никогда не выносится в shared package.
+- **Каждый сервис выпускает собственные образ, CI, миграции и Makefile.** `deploy` ссылается на immutable теги образов и не собирает исходники соседних репозиториев.
 
 ## 2. Service-internal layout (6-layer)
 
-Every Go service follows the same shape. Example for `services/auth/`:
+Every Go service follows the same shape. Example for `auth-service/`:
 
 ```
-services/auth/
+auth-service/
 ├── cmd/auth/main.go                # entry point only: parse config, call app.Run. No logic.
 ├── internal/
 │   ├── app/                        # composition root / Dependency Injection: builds every

@@ -32,6 +32,16 @@ entity "refresh_tokens" as refresh_tokens {
   * created_at : timestamptz
 }
 
+entity "password_reset_requests" as password_reset_requests {
+  * id : uuid <<PK>>
+  --
+  * identity_id : uuid <<FK>>
+  * token_hash : bytea <<UQ>>  -- sha256, не сам токен
+  * expires_at : timestamptz
+  used_at : timestamptz
+  * created_at : timestamptz
+}
+
 entity "signing_keys" as signing_keys {
   * kid : text <<PK>>
   --
@@ -55,6 +65,7 @@ entity "outbox" as outbox {
 
 identities ||--o| credentials : "1:0..1 (OAuth-identity\nможет быть без пароля)"
 identities ||--o{ refresh_tokens
+identities ||--o{ password_reset_requests
 refresh_tokens |o--o| refresh_tokens : "replaced_by\n(цепочка ротации)"
 
 note bottom of refresh_tokens

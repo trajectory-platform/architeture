@@ -10,10 +10,11 @@
 Чужие данные получают через gRPC владельца или реплицируют у себя по событиям (например, Core держит локальную проекцию «урок оплачен» по `payment.captured`). Ссылки между агрегатами разных сервисов — просто uuid без FK (`holds.reference_id` → booking).
 
 ```
-auth_db      — identities, credentials, refresh_tokens, signing keys, outbox
+auth_db      — identities, credentials, refresh_tokens, password_reset_requests, signing keys, outbox
 education_db — slots, bookings, lessons, chats, messages, reports, tickets, outbox
 billing_db   — ledger_entries, holds, idempotency_keys, outbox
 realtime_db  — board_updates, board_snapshots (только лог доски)
+notification_db — notification_preferences, notifications, deliveries, processed_events
 ```
 
 ## Ключевые таблицы
@@ -137,6 +138,44 @@ CREATE TABLE messages (
 ```
 
 Один механизм для всех видов чатов; тикеты поддержки — `chats.kind = 'support'` + отдельная таблица `support_tickets (chat_id, status, assignee_id)` со статусами open / pending / resolved / closed. Поиск по сообщениям — Postgres full-text (`tsvector`-индекс по `body`) — на MVP достаточно.
+
+### notification_db: inbox и доставки
+
+```sql
+CREATE TABLE notification_preferences (
+    user_id    uuid PRIMARY KEY,
+    email      boolean NOT NULL DEFAULT true,
+    push       boolean NOT NULL DEFAULT true,
+    in_app     boolean NOT NULL DEFAULT true,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE notifications (
+    id           uuid PRIMARY KEY,
+    user_id      uuid NOT NULL,
+    kind         text NOT NULL,
+    title        text NOT NULL,
+    payload      jsonb NOT NULL,
+    event_id     uuid NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    read_at      timestamptz,
+    UNIQUE (event_id, user_id, kind)
+);
+
+CREATE TABLE deliveries (
+    id              uuid PRIMARY KEY,
+    notification_id uuid NOT NULL REFERENCES notifications(id),
+    channel         text NOT NULL,       -- in_app | email | push
+    status          text NOT NULL,       -- PENDING | SENT | RETRYING | FAILED
+    attempts        integer NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz,
+    provider_ref    text,
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (notification_id, channel)
+);
+```
+
+Сервис не принимает пользовательские уведомления как бизнес-команды: он материализует факты из JetStream. Уникальные ключи делают обработку событий и ретраи доставки идемпотентными.
 
 ## Redis
 

@@ -27,7 +27,7 @@
 
 ### Контракты
 
-Все `.proto` — в одном модуле `proto/` в корне монорепы, под управлением **buf**:
+Все `.proto` живут в отдельном репозитории `contracts` — единственном источнике межсервисных контрактов — и управляются **buf**:
 
 ```
 proto/
@@ -38,8 +38,8 @@ proto/
 ```
 
 - `buf breaking` в CI — несовместимое изменение контракта не проходит ревью.
-- Go-стабы генерируются для всех сервисов из одного источника.
-- Gateway генерирует OpenAPI-спеку → из неё TypeScript-клиент фронтенда. Руками REST-типы не пишутся.
+- Go-стабы публикуются как версионированный модуль; каждый сервис обновляет зависимость отдельным совместимым PR.
+- OpenAPI хранится и проверяется в `contracts`; из него генерируется TypeScript-клиент фронтенда. Руками REST-типы не пишутся.
 
 ## Асинхронное взаимодействие (NATS JetStream)
 
@@ -51,15 +51,23 @@ Subject-схема: `trajectory.<domain>.<event>`. Payload — protobuf из `pr
 
 | Событие | Издатель | Потребители | Реакция |
 |---|---|---|---|
-| `booking.confirmed` | Core | (нотификации в Core) | Уведомления участникам, материализация календаря |
-| `booking.cancelled` | Core | Billing | `ReleaseHold` — вернуть резерв на баланс |
-| `lesson.started` | Core (по вебхуку LiveKit) | Realtime, reports | Метка фактического начала, таймер |
-| `lesson.completed` | Core | Billing, reports | Billing: `CaptureHold` (списание); reports: инкремент счётчика прогресса |
-| `payment.captured` | Billing | Core | Пометить урок оплаченным |
-| `progress.milestone_reached` | Core (reports) | (нотификации в Core) | Запись в журнал прогресса каждые 5 уроков, уведомление |
-| `user.registered` | Auth | Core | Создание профиля студента/преподавателя |
+| `booking.confirmed` | Core | Notification | Уведомления участникам, материализация календаря |
+| `booking.cancelled` | Core | Billing, Notification | `ReleaseHold` — вернуть резерв на баланс; уведомить участников |
+| `lesson.started` | Core (по вебхуку LiveKit) | Realtime, reports, Notification | Метка фактического начала, таймер и уведомление при необходимости |
+| `lesson.completed` | Core | Billing, reports, Notification | Billing: `CaptureHold`; reports: инкремент прогресса; Notification: событие пользователю |
+| `payment.captured` | Billing | Core, Notification | Пометить урок оплаченным; отправить чек/подтверждение |
+| `progress.milestone_reached` | Core (reports) | Notification | Уведомление о новой записи журнала прогресса |
+| `user.registered` | Auth | Core, Notification | Создание профиля и начальных настроек уведомлений |
+| `password.reset.requested` | Auth | Notification | Отправка reset-ссылки; секрет URL забирается по защищённому Auth RPC, не из события |
 
-Правила консьюмеров: durable consumer на сервис, обработка **идемпотентна** (redelivery возможна — at-least-once), ack только после успешной обработки, после N неудачных доставок — событие в dead-letter subject + алерт.
+### Dead-letter queue (DLQ)
+
+У JetStream нет безопасного «автоматически переместить сообщение в DLQ» без логики консьюмера, поэтому это явный контракт обработки:
+
+1. Каждый durable consumer задаёт `max_deliver` и backoff. Обработчик сохраняет receipt `event_id`/результат в своей БД; повторная доставка становится no-op.
+2. После последней неудачной попытки он публикует `events.v1.DeadLettered` в отдельный stream `TRAJECTORY_DLQ` с subject `trajectory.dlq.<service>.<consumer>` и ждёт JetStream ack.
+3. Только после подтверждённой публикации он ack'ает исходное сообщение. Падение между этими операциями может создать дубликат DLQ-сообщения, поэтому ключ дедупликации — `(event_id, consumer)`.
+4. DLQ — закрытый stream с ограниченным retention (14 дней по умолчанию), отдельными ACL и алертом на каждое новое сообщение. `failure_message` санитизируется; raw payload не пишется в логи. Replay — явная операторская команда в исходный subject с новым audit record, не автоматическая повторная доставка.
 
 ### Transactional outbox
 

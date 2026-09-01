@@ -24,6 +24,7 @@
 | `/auth/*` (register, login, refresh, logout) | Auth | `auth.v1` |
 | `/teachers/*`, `/slots/*`, `/bookings/*`, `/lessons/*`, `/chats/*`, `/tickets/*`, `/reports/*`, `/profiles/*`, `/uploads` | Core | `education.v1` |
 | `/balance`, `/topup` | Billing | `billing.v1` |
+| `/notifications/*` | Notification | `notification.v1`: inbox, отметки прочтения, настройки |
 
 Правила каждого исходящего вызова ([03 — Взаимодействие](../architecture/03-communication.md)):
 
@@ -41,14 +42,20 @@
 
 ## Rate limiting
 
-Счётчики в Redis с TTL ([07](../architecture/07-security.md)):
+Лимитирование — два независимых слоя, потому что Gateway не защищает Nginx и не должен быть единственной защитой при отказе Redis:
 
-| Категория | Ключ | Зачем |
+1. **Nginx:** фиксированный local rate limit и лимит одновременных соединений по доверенному client IP. Этот слой дёшев и остаётся доступен без Redis.
+2. **Gateway:** Redis Lua token-bucket (одно атомарное чтение/изменение), ключ включает группу маршрута и субъект. В ответе всегда `429 Too Many Requests`, `Retry-After` и rate-limit headers.
+
+| Группа | Ключи Gateway | Режим при отказе Redis |
 |---|---|---|
-| Анонимные (`/auth/login`, `/auth/register`, `/auth/refresh`) | по IP | Защита от брутфорса и перебора |
-| Авторизованные | по `user_id` | Честный лимит за NAT; защита от runaway-клиента |
+| Login, register, password reset | IP-префикс + HMAC(normalized email) для login/reset | **fail-closed** (`503`) после local Nginx-лимита: нельзя превращать деградацию Redis в окно для credential stuffing |
+| Refresh/logout | IP-префикс + HMAC(refresh token) | **fail-closed**: предотвращает storm/replay cookie |
+| Topup, booking, отмена, upload URL | `user_id` + маршрут; дополнительно IP-префикс | **fail-closed** для mutation; ключ идемпотентности не заменяет лимит |
+| Обычное чтение | `user_id` или IP-префикс + маршрут | fail-open с метрикой и алертом, если Nginx продолжает ограничивать периметр |
+| WebSocket | отдельный лимит upgrade/подключений в Nginx и Realtime | не использует общий HTTP bucket |
 
-Превышение → `429 Too Many Requests` + `Retry-After`. Redis недоступен → fail-open с алертом (доступность важнее лимита; брутфорс ограничен ещё и argon2id на стороне Auth).
+IP извлекается только из заголовка, который переписывает доверенный Nginx/LB; нельзя доверять произвольному `X-Forwarded-For`. IPv6 нормализуется до /64. Численные лимиты и burst задаются конфигурацией и подбираются нагрузочным тестом по отдельным группам — единый «100 запросов в минуту» не подходит для auth, чтения и видео-комнаты.
 
 ## Формат ошибок
 

@@ -8,6 +8,7 @@ Container(spa, "Web App (SPA)", "React / TypeScript", "TypeScript-клиент, 
 Container(auth, "Auth Service", "Go", "auth.v1 + JWKS endpoint")
 Container(core, "Core Education Service", "Go", "education.v1")
 Container(billing, "Billing Service", "Go", "billing.v1")
+Container(notification, "Notification Service", "Go", "notification.v1")
 ContainerDb(redis, "Redis", "Redis", "JWKS-кэш, rate limiting, блэклист jti")
 
 Container_Boundary(gateway, "API Gateway (stateless, ×N реплик)") {
@@ -15,7 +16,7 @@ Container_Boundary(gateway, "API Gateway (stateless, ×N реплик)") {
     Component(otel_mw, "OTel Middleware", "Go middleware", "Здесь рождается trace_id; контекст -> gRPC metadata")
     Component(auth_mw, "Auth Middleware", "Go middleware", "Bearer JWT: локальная проверка подписи и клеймов; identity -> metadata")
     Component(jwks_cache, "JWKS Cache", "Go package", "in-memory + Redis; обновление по TTL и kid-промаху")
-    Component(ratelimit, "Rate Limiter", "Go middleware", "IP для анонимных, user_id для авторизованных; 429 + Retry-After; fail-open")
+    Component(ratelimit, "Rate Limiter", "Go middleware", "Redis Lua token bucket: маршрут + IP/учётная запись; 429 + Retry-After; protected routes fail-closed")
     Component(idem_mw, "Idempotency Forwarder", "Go middleware", "Заголовок Idempotency-Key -> gRPC metadata (без проверки — её делают владельцы)")
     Component(cookie, "Cookie Handler", "Go package", "/auth/*: refresh из httpOnly cookie <-> поле gRPC; Set-Cookie / сброс")
     Component(grpc_clients, "gRPC Clients", "Go, grpc-go", "Клиенты auth/core/billing: deadline на вызов, retry только идемпотентных, OTel-интерсепторы")
@@ -44,6 +45,7 @@ Rel(cookie, grpc_clients, "refresh как поле запроса")
 Rel(grpc_clients, auth, "Register, Login, Refresh, Logout", "gRPC")
 Rel(grpc_clients, core, "слоты, брони, уроки, чаты, тикеты, отчёты, профили, uploads", "gRPC")
 Rel(grpc_clients, billing, "GetBalance, TopUp", "gRPC")
+Rel(grpc_clients, notification, "Inbox, настройки", "gRPC")
 Rel(grpc_clients, err_mapper, "ошибки -> HTTP")
 
 SHOW_LEGEND()

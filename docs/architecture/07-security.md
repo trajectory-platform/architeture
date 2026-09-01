@@ -56,10 +56,11 @@ Auth Service владеет идентичностью и подписывает
 - **TLS везде**: Nginx терминирует HTTPS/WSS; внутренняя сеть — закрытая Docker-сеть, наружу торчат только Nginx и LiveKit-порты.
 - gRPC-порты сервисов и базы **не публикуются** наружу.
 - LiveKit-вебхуки в Core — проверка подписи вебхука (LiveKit подписывает запросы).
-- Rate limiting на Gateway (Redis): по IP для анонимных (login, register — защита от брутфорса), по user_id для авторизованных.
+- Двухслойный rate limiting: local limit/concurrency в Nginx и атомарный Redis token-bucket в Gateway. Auth, refresh и денежные mutation-маршруты fail-closed при отказе Redis; обычное чтение — fail-open только при действующем Nginx-лимите и с алертом. Подробности — [API Gateway](../services/api-gateway.md#rate-limiting).
 - Файлы: presigned URL MinIO с коротким TTL; права на объект проверяет Core до выдачи URL ([06](06-data-storage.md)); валидация типа/размера при выдаче presigned PUT.
 - Секреты (ключи подписи, креды БД, LiveKit API key) — через переменные окружения/secret-хранилище, не в репозитории.
 - Пароли — argon2id; идентификаторы — uuid (не перечислимы).
+- Notification Service не получает пароль, refresh-токен, полный профиль или содержимое чата. Reset-секреты и delivery payload не попадают в NATS/DLQ. Если доменный event по контракту содержит PII (например, legacy `user.registered.email`), subject защищён отдельными ACL и коротким retention; DLQ хранит только безопасные metadata (digest, размер и redacted reference), но не raw payload и никогда не логируется. Настройки каналов и inbox живут в отдельной БД Notification.
 
 ## Изоляция данных
 

@@ -25,6 +25,8 @@ Auth Service владеет идентичностью пользователе�
 | `Login` | Проверка пароля (argon2id), выдача пары access + refresh | `Unauthenticated` (неверная пара) — без уточнения, что именно неверно |
 | `Refresh` | Ротация refresh-токена, новый access | `Unauthenticated` (истёк / отозван / повторное использование) |
 | `Logout` | Отзыв refresh-цепочки (family) | — (идемпотентен) |
+| `RequestPasswordReset` | Принимает email и всегда отвечает успехом; для существующей identity создаёт одноразовый reset request | — (не раскрывает наличие email) |
+| `ResetPassword` | Валидирует одноразовый reset token, меняет пароль и отзывает все refresh-цепочки | `Unauthenticated` (невалидный/просроченный token) |
 
 Все RPC — с deadline на стороне вызывающего ([03 — Взаимодействие](../architecture/03-communication.md)). Refresh-токен ходит между SPA и Gateway в httpOnly Secure cookie; в gRPC передаётся как поле запроса.
 
@@ -33,12 +35,15 @@ Auth Service владеет идентичностью пользователе�
 | Endpoint | Назначение |
 |---|---|
 | `GET /.well-known/jwks.json` | Публичные ключи подписи. Кэшируется Gateway и Realtime (Redis + in-memory, обновление по TTL и по `kid`-промаху) |
+| `POST /auth/forgot-password` | Через Gateway вызывает `RequestPasswordReset`; ответ одинаков для существующего и отсутствующего email |
+| `POST /auth/reset-password` | Через Gateway вызывает `ResetPassword` с одноразовым token и новым паролем |
 
 ## События
 
 | Событие | Направление | Механика |
 |---|---|---|
 | `user.registered` | публикует | Через transactional outbox в той же транзакции, что и INSERT identity. Core (durable consumer) создаёт профиль; обработка идемпотентна по `user_id` |
+| `password.reset.requested` | публикует | Через outbox после создания reset request. Payload содержит только `reset_request_id`; Notification получает одноразовый URL через защищённый internal RPC Auth |
 
 Auth ничего не потребляет из JetStream.
 
@@ -77,6 +82,18 @@ CREATE TABLE refresh_tokens (
 CREATE UNIQUE INDEX refresh_one_active_per_family
     ON refresh_tokens (family_id) WHERE status = 'ACTIVE';
 
+CREATE TABLE password_reset_requests (
+    id          uuid        PRIMARY KEY,
+    identity_id uuid        NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+    token_hash  bytea       NOT NULL UNIQUE,      -- sha256; raw token is never stored
+    expires_at  timestamptz NOT NULL,
+    used_at     timestamptz,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX password_reset_active_by_identity
+    ON password_reset_requests (identity_id, expires_at)
+    WHERE used_at IS NULL;
+
 CREATE TABLE signing_keys (
     kid         text        PRIMARY KEY,
     alg         text        NOT NULL,             -- EdDSA | RS256
@@ -102,6 +119,7 @@ CREATE INDEX outbox_unpublished ON outbox (id) WHERE published_at IS NULL;
 
 - **Токены не хранятся в открытом виде** — только `sha256`-хэш. Утечка дампа auth_db не даёт рабочих refresh-токенов.
 - **Одна семья — один активный токен** (partial unique index). Ротация = `ROTATED` старому + INSERT нового в одной транзакции.
+- **Reset request одноразовый.** В БД хранится только sha256 token; `used_at IS NULL` и `expires_at > now()` проверяются и меняются в одной транзакции с паролем и отзывом сессий.
 - **Баланс ролей в БД, не в коде**: `role` — колонка identity, в токен попадает как клейм при каждой выдаче.
 
 ## Ключевые потоки
@@ -128,6 +146,12 @@ CREATE INDEX outbox_unpublished ON outbox (id) WHERE published_at IS NULL;
 ### Logout
 
 `UPDATE refresh_tokens SET status='REVOKED' WHERE family_id = ...`. Идемпотентен. Окно жизни уже выданного access ограничено его коротким TTL.
+
+### Восстановление пароля
+
+1. `RequestPasswordReset(email)` всегда возвращает одинаковый успешный ответ. Для существующей активной identity Auth создаёт одноразовый reset request с коротким TTL; в БД хранится только его хэш/идентификатор.
+2. В той же транзакции пишется outbox `password.reset.requested`. Notification получает лишь `reset_request_id`, а сам URL запрашивает у Auth по защищённому service-to-service RPC. Секрет reset token не попадает в JetStream, логи или DLQ.
+3. `ResetPassword(token, new_password)` атомарно проверяет TTL и одноразовость, обновляет argon2id-хэш, помечает request использованным и отзывает все refresh-token families. Пользователь входит заново.
 
 ### Ротация ключей подписи
 

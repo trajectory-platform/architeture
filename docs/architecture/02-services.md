@@ -1,16 +1,17 @@
 # 02 — Сервисы и владение данными
 
-Система состоит из пяти сервисов. Принцип границ: сервис = зона владения данными + протокольная роль. Диаграммы: [C2 — контейнеры](../diagrams/c4/c2-containers.puml), [C3 — Core](../diagrams/c4/c3-core-education.puml), [C3 — Realtime](../diagrams/c4/c3-realtime.puml).
+Система состоит из шести сервисов. Принцип границ: сервис = зона владения данными + протокольная роль. Диаграммы: [C2 — контейнеры](../diagrams/c4/c2-containers.puml), [C3 — Core](../diagrams/c4/c3-core-education.puml), [C3 — Realtime](../diagrams/c4/c3-realtime.puml).
 
 ## Сводная таблица
 
 | Сервис | Владеет данными | API наружу | API внутрь (gRPC) | Публикует события | Потребляет события |
 |---|---|---|---|---|---|
 | **API Gateway** | — (stateless) | REST (OpenAPI) | — (только клиент gRPC) | — | — |
-| **Auth Service** | identities, credentials, refresh tokens, ключи JWKS | JWKS endpoint (через gateway) | `auth.v1`: Register, Login, Refresh, Logout | `user.registered` | — |
+| **Auth Service** | identities, credentials, refresh tokens, reset-запросы, ключи JWKS | JWKS endpoint (через gateway) | `auth.v1`: Register, Login, Refresh, Logout, RequestPasswordReset, ResetPassword | `user.registered`, `password.reset.requested` | — |
 | **Core Education** | availability, slots, bookings, lessons, чаты/сообщения, заметки, журнал прогресса, тикеты поддержки | LiveKit webhooks (HTTP) | `education.v1`: слоты, бронирования, уроки, чаты, отчёты; `JoinLesson` | `booking.confirmed`, `booking.cancelled`, `lesson.started`, `lesson.completed`, `progress.milestone_reached` | `payment.captured` |
 | **Billing Service** | ledger_entries, holds, idempotency keys | — | `billing.v1`: PlaceHold, ReleaseHold, CaptureHold, GetBalance, TopUp | `payment.captured`, `hold.released` | `booking.cancelled`, `lesson.completed` |
 | **Realtime Service** | почти ничего (membership/presence — в Redis; лог Yjs-апдейтов — в своей Postgres/MinIO) | WebSocket (WSS) | — (клиент gRPC к Core) | — | `lesson.started` (опционально, для пре-создания комнат) |
+| **Notification Service** | настройки, inbox, попытки и статусы доставок, шаблоны | — (через Gateway) | `notification.v1`: List, MarkRead, UpdatePreferences | `notification.delivery_failed` | `user.registered`, `password.reset.requested`, `booking.*`, `lesson.*`, `payment.*`, `progress.*` |
 
 ## API Gateway
 
@@ -20,6 +21,7 @@
 - Валидирует JWT локально по JWKS (без похода в Auth на каждый запрос).
 - Генерирует `Idempotency-Key`-прокидку: принимает заголовок от клиента, передаёт в gRPC metadata.
 - Rate limiting (Redis), CORS, единый формат ошибок.
+- Проксирует пользовательские API Notification Service: inbox и настройки каналов уведомлений.
 - Публикует OpenAPI-спеку — из неё генерируется TypeScript-клиент фронтенда.
 
 Никакой бизнес-логики. Если в обработчике гейтвея появляется `if` про предметную область — он переезжает в Core.
@@ -52,6 +54,16 @@
 
 Billing не знает про уроки и слоты — только про холды с внешним `reference_id`. Связь «урок завершён → захвати холд» — через события JetStream.
 
+## Notification Service
+
+Владеет коммуникацией с пользователем, а не доменными изменениями. Сервис потребляет факты из JetStream, выбирает получателей и каналы по настройкам, создаёт дедуплицируемые доставки и отправляет in-app/email/push с ретраями и ограничением скорости провайдера.
+
+- **Никаких синхронных вызовов из Core/Billing.** Бронь и платёж успешны независимо от доступности email/push-провайдера.
+- **Свои данные.** `notification_preferences`, `notifications` (inbox), `deliveries`, `templates` и `processed_events` живут в собственной Postgres. Ни Auth, ни Core не читают эти таблицы.
+- **Дедупликация.** `event_id + recipient_id + notification_kind` уникальны; JetStream допускает redelivery, поэтому повтор события не создаёт повторную отправку.
+- **Доступ пользователя.** Gateway вызывает `notification.v1` для списка inbox, отметки прочтения и изменения согласий. Он не читает данные Notification напрямую.
+- **Граница данных.** Сервис хранит только минимальные данные доставки (user_id, канал, шаблон, snapshot параметров), но не копирует профиль или содержимое чата.
+
 ## Realtime Service
 
 Сознательно почти stateless — чтобы горизонтально масштабироваться и переживать рестарты:
@@ -68,7 +80,6 @@ Billing не знает про уроки и слоты — только про 
 | Кандидат | Где живёт | Почему не сервис |
 |---|---|---|
 | Chat Service | пакет `chats` в Core | Нет своего масштабирующего профиля на MVP; выделение добавит сетевой хоп в каждое сообщение и распределённую транзакцию «сообщение + нотификация» |
-| Notification Service | пакет в Core (консьюмер событий) | Пока единственный канал — внутри приложения; выделять стоит при появлении email/push-провайдеров |
 | Reporting Service | пакет `reports` в Core | Чистый CRUD + один консьюмер; нет причин для отдельного деплоя |
 | Media Service | LiveKit (готовый) | Писать свой SFU — не наша задача |
 

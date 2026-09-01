@@ -15,7 +15,7 @@ Phases are sequential; tasks inside a phase can run in parallel once their liste
 | # | Task | Size | Depends on |
 |---|---|---|---|
 | **Phase 0 — Foundation** | | | |
-| [T01](tasks/T01-scaffolding.md) | Monorepo & service scaffolding, CI, lint, Makefile | M | — |
+| [T01](tasks/T01-scaffolding.md) | Service repository scaffolding, CI, lint, Makefile | M | — |
 | [T02](tasks/T02-proto-contracts.md) | Proto contracts: `auth.v1` + `events.v1 UserRegistered` | S | T01 |
 | [T03](tasks/T03-db-migrations.md) | auth_db schema migrations + goose wiring | S | T01 |
 | **Phase 1 — Core building blocks** | | | |

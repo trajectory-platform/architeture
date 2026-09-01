@@ -8,7 +8,7 @@ Full auth_db schema as goose migrations, embedded and applied on service start. 
 
 ## Scope
 
-In — `services/auth/migrations/`:
+In — `auth-service/internal/migrations/`:
 
 - `0001_extensions.sql` — `CREATE EXTENSION IF NOT EXISTS citext;`
 - `0002_identities.sql` — `identities` per spec + `CHECK (role IN ('student','teacher','admin'))`, `CHECK (status IN ('ACTIVE','BLOCKED'))`.

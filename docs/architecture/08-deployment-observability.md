@@ -22,10 +22,10 @@
               │        ▲
               │ gRPC   │ events
               ▼        ▼
-        [ Billing ] [ NATS JetStream ]
+        [ Billing ] [ NATS JetStream ] ──► [ Notification ]
 
 хранилища: postgres-auth, postgres-education, postgres-billing,
-           postgres-realtime, redis, minio
+           postgres-realtime, postgres-notification, redis, minio
 мониторинг: prometheus, grafana, loki (+ otel-collector)
 ```
 
@@ -38,9 +38,9 @@
 | `/livekit/*` | LiveKit signaling (или отдельный поддомен) |
 | `/storage/*` | MinIO (presigned-доступ) |
 
-Масштабирование: Realtime и Gateway — stateless, масштабируются репликами за Nginx (Realtime координируется через Redis, см. [05](05-realtime-whiteboard.md)). Core/Billing/Auth — реплики свободно (состояние в Postgres; конкуренция outbox-relay решена `FOR UPDATE SKIP LOCKED`).
+Масштабирование: Realtime и Gateway — stateless, масштабируются репликами за Nginx (Realtime координируется через Redis, см. [05](05-realtime-whiteboard.md)). Core/Billing/Auth/Notification — реплики свободно; состояние находится в их Postgres, конкуренция outbox-relay и JetStream-консьюмеров решена `FOR UPDATE SKIP LOCKED` и durable consumers.
 
-Сборка: один монорепный `Dockerfile`-паттерн на Go-сервис (multi-stage, distroless), `docker compose up` поднимает весь стек локально — это же описание используется как база для прода (Compose → Swarm/K8s при необходимости, без изменения архитектуры).
+Сборка: каждый сервис — отдельный репозиторий с собственным `Dockerfile`-паттерном (multi-stage, distroless) и версионированной зависимостью на `contracts`. Отдельный deployment-репозиторий собирает конкретные версии образов в локальный Compose-стек; это же описание служит базой для прода (Compose → Swarm/K8s при необходимости, без изменения архитектуры).
 
 ## Наблюдаемость
 

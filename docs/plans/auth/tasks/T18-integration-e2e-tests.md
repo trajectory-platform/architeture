@@ -8,7 +8,7 @@ Service-level proof of the [auth.md](../../../services/auth.md) contract: full b
 
 ## Scope
 
-In — `services/auth/tests/e2e/` (build tag `e2e`, `make test-e2e`):
+In — `auth-service/tests/e2e/` (build tag `e2e`, `make test-e2e`):
 
 - Harness: start containers, run migrations, boot the service wiring (prefer in-process composition root reuse over exec'ing the binary — faster, still real repositories and infrastructure packages), gRPC client via local listener, JetStream test consumer, fixed-ish clock where injectable.
 - Scenarios:
@@ -20,7 +20,7 @@ In — `services/auth/tests/e2e/` (build tag `e2e`, `make test-e2e`):
   6. **Logout**: refresh after logout fails; double logout OK.
   7. **JWKS + rotation**: force `Rotate` (test hook / direct manager call) → new `kid` in JWKS and in newly issued tokens; pre-rotation access still verifies against served set.
   8. **Crash-consistency (outbox)**: registration committed with relay stopped → row pending; relay started → event arrives exactly with `Nats-Msg-Id` = outbox id.
-- CI job: e2e suite on PRs touching `services/auth/`, `pkg/`, or `proto/trajectory/auth`.
+- CI job: e2e suite on auth-service PRs; a compatible `contracts` version is pinned and upgraded explicitly.
 
 Out: load testing, Gateway REST behavior (cookie semantics live there), chaos beyond the listed crash test.
 

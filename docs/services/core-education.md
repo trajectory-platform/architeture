@@ -238,5 +238,5 @@ CREATE TABLE progress_journal (
 
 - **Денег.** Балансы и холды — Billing; Core оперирует только `booking_id`/суммой в `PlaceHold` и слушает `payment.captured`. Компрометация education_db не открывает леджер.
 - **Yjs-апдейтов и presence.** Realtime-поток — не предметные данные; Core хранит только результат (`messages` через `SaveMessage`).
-- **Отдельных Chat/Notification/Reporting сервисов.** Пакеты внутри Core до доказанной причины выделения ([ADR-001](../adr/ADR-001-microservices-granularity.md)).
+- **Отдельных Chat/Reporting сервисов.** Пакеты внутри Core до доказанной причины выделения ([ADR-001](../adr/ADR-001-microservices-granularity.md)). Уведомления намеренно выделены в Notification Service и получают доменные факты из outbox/JetStream.
 - **Байтов файлов.** Только MinIO-ключи; байты ходят клиент↔MinIO по presigned URL.
