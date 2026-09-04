@@ -4,8 +4,8 @@ Implementation breakdown of the [Auth Service](../../services/auth.md) into smal
 
 **Read first, in order:**
 
-1. [docs/engineering/code-conventions.md](../../engineering/code-conventions.md) — code style, folder structure, library choices. Mandatory for every task.
-2. [docs/services/auth.md](../../services/auth.md) — service spec (API, DDL, flows, invariants).
+1. [Системный анализ/engineering/code-conventions.md](../../engineering/code-conventions.md) — code style, folder structure, library choices. Mandatory for every task.
+2. [Системный анализ/services/auth.md](../../services/auth.md) — service spec (API, DDL, flows, invariants).
 3. Supporting: [07 — Security](../../architecture/07-security.md), [03 — Communication](../../architecture/03-communication.md), [C3 components](../../diagrams/c4/c3-auth.puml), sequence diagrams [registration](../../diagrams/sequence/auth-registration.puml) / [refresh rotation](../../diagrams/sequence/auth-refresh-rotation.puml).
 
 ## Task list & order

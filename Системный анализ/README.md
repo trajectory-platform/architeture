@@ -80,7 +80,7 @@
 Диаграммы — обычные `.puml`-файлы PlantUML:
 
 - **WebStorm / IntelliJ**: плагин «PlantUML Integration» — превью прямо в IDE.
-- **CLI**: `plantuml docs/diagrams/**/*.puml` (нужна Java) — генерирует PNG рядом с файлами; `plantuml -checkonly ...` — только проверка синтаксиса.
+- **CLI**: `plantuml "Системный анализ/diagrams/**/*.puml"` (нужна Java) — генерирует PNG рядом с файлами; `plantuml -checkonly ...` — только проверка синтаксиса.
 - **Онлайн**: [plantuml.com/plantuml](https://www.plantuml.com/plantuml) — вставить содержимое файла.
 
 C4-диаграммы используют стандартную библиотеку PlantUML (`!include <C4/C4_Container>`), которая входит в свежие версии PlantUML и работает офлайн. Если локальная версия PlantUML старая и stdlib-инклюды не находятся, замените их на удалённые:

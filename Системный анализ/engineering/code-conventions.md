@@ -1,8 +1,8 @@
 # Code Conventions & Repository Structure
 
-Engineering guide for implementing Trajectory services. Written for both humans and coding agents: follow it exactly unless a task file explicitly overrides it. Architecture docs ([docs/README.md](../README.md)) define *what* to build; this document defines *how* and *where*.
+Engineering guide for implementing Trajectory services. Written for both humans and coding agents: follow it exactly unless a task file explicitly overrides it. Architecture docs ([Системный анализ/README.md](../README.md)) define *what* to build; this document defines *how* and *where*.
 
-> Repo documentation prose is in Russian (see [docs/README.md — Конвенции](../README.md)); engineering artifacts (this file, task plans, code, comments, commit messages) are in English.
+> Repo documentation prose is in Russian (see [Системный анализ/README.md — Конвенции](../README.md)); engineering artifacts (this file, task plans, code, comments, commit messages) are in English.
 
 ## 1. Repository layout (multi-repo)
 
