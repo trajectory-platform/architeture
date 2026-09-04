@@ -6,6 +6,8 @@
 
 gRPC contract for Auth and the `user.registered` event payload, under buf with codegen into `gen/`. Single source of truth per [ADR-004](../../../adr/ADR-004-grpc-internal-rest-edge.md).
 
+> **Принятая эволюция:** [ADR-006](../../../adr/ADR-006-auth-api-evolution-and-password-reset.md) заменяет исходную форму контракта ниже в части response wrappers для `Register` / `Login` / `Refresh`, общего `ROLE_ADMIN`, password reset RPC и `UserRegistered.event_id`. Этот brief сохраняет исходный срез T02; актуальным источником формы API остаётся versioned contract в репозитории `contracts`.
+
 ## Scope
 
 In:

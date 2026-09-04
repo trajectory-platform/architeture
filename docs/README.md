@@ -41,6 +41,7 @@
 | [ADR-002](adr/ADR-002-crdt-sync-path-a.md) | CRDT-синхронизация: Go relay с персистентностью (vs Hocuspocus) |
 | [ADR-003](adr/ADR-003-nats-jetstream.md) | Шина событий: NATS JetStream + transactional outbox (vs Redis Pub/Sub) |
 | [ADR-004](adr/ADR-004-grpc-internal-rest-edge.md) | gRPC внутри, REST на границе; контракты в `proto/` под buf |
+| [ADR-006](adr/ADR-006-auth-api-evolution-and-password-reset.md) | Эволюция Auth API, `event_id` и владение восстановлением пароля |
 
 ### Диаграммы
 
