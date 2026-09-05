@@ -10,9 +10,9 @@ Auth runs as part of the full local stack ([08 — Топология](../../../
 
 In:
 
-- `deploy/docker-compose.yml`: finalize `auth` service — env from `.env`, `depends_on` with `condition: service_healthy` (postgres-auth, nats), healthcheck hitting `/readyz`, restart policy, resource notes. Redis optional → auth must start fine without it (blacklist disabled).
+- `deploy/docker-compose.yml`: finalize `auth` service — env from `.env`, `depends_on` with `condition: service_healthy` (postgres-auth, Kafka), healthcheck hitting `/readyz`, restart policy, resource notes. Redis optional → auth must start fine without it (blacklist disabled).
 - `.env.example`: every `AUTH_*` var with safe dev defaults and comments; KEK generation one-liner documented.
-- Smoke script `deploy/smoke/auth.sh` (bash; runs in CI and locally): wait for healthy → `grpcurl` Register → Login → Refresh → reuse-detect (expect failure) → Logout → fetch JWKS; assert outbox drained (depth metric = 0) and `user.registered` visible via `nats` CLI consumer peek.
+- Smoke script `deploy/smoke/auth.sh` (bash; runs in CI and locally): wait for healthy → `grpcurl` Register → Login → Refresh → reuse-detect (expect failure) → Logout → fetch JWKS; assert outbox drained (depth metric = 0) and `user.registered` visible through a Kafka test consumer.
 - `auth-service/README.md`: how to run, env reference table, smoke instructions, links to [auth.md](../../../services/auth.md) and the [plan](../README.md).
 - Prometheus scrape config in `deploy/` includes auth `/metrics`.
 

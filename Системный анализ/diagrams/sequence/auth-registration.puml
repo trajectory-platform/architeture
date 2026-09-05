@@ -1,24 +1,28 @@
 @startuml auth-registration
-title Регистрация: identity в Auth -> профиль в Core (outbox + JetStream)
+title Регистрация: identity в Auth -> профиль в Core (outbox + Kafka)
 
 actor "User (SPA)" as spa
 participant "API Gateway" as gw
 participant "Auth Service" as auth
 database "auth_db" as adb
-queue "NATS JetStream" as nats
+queue "Apache Kafka" as kafka
 participant "Core Education" as core
 database "education_db" as edb
+participant "Notification" as notification
+database "notification_db" as ndb
 
-spa -> gw: POST /auth/register\n{email, password, role}
+spa -> gw: POST /auth/register\n{email, password, learning_role, consents}
 gw -> gw: rate limit по IP (Redis)
 gw -> auth: Register(email, password, role)\nmetadata: deadline
 
 auth -> auth: argon2id(password)
 
 group Транзакция (auth_db)
-  auth -> adb: INSERT identities (email UNIQUE)
+  auth -> adb: INSERT identities\nstatus=PENDING_EMAIL, type=USER
+  auth -> adb: INSERT user_identities + learning_role
   auth -> adb: INSERT credentials (password_hash)
-  auth -> adb: INSERT outbox('trajectory.user.registered')
+  auth -> adb: INSERT confirmation action (token_hash)
+  auth -> adb: INSERT audit + outbox\nuser.registered + identity.email_confirmation.requested
 end
 
 alt email занят
@@ -27,24 +31,28 @@ alt email занят
   gw --> spa: 409 Conflict
 else identity создана
   auth -> adb: INSERT refresh_tokens\n(new family_id, status=ACTIVE)
-  auth -> auth: подпись access JWT\n(ACTIVE-ключ, клеймы sub/role/jti)
+  auth -> auth: подпись access JWT Ed25519\nroles[], permissions[], session_id
   auth --> gw: TokenPair{access, refresh}
   gw --> spa: 201 Created\naccess в теле, refresh в httpOnly cookie
 
   group Outbox relay (после коммита, асинхронно)
     auth -> adb: SELECT outbox WHERE published_at IS NULL\nFOR UPDATE SKIP LOCKED
-    auth -> nats: publish user.registered
-    nats --> auth: ack
+    auth -> kafka: publish auth events\nkey=identity_id, acks=all
+    kafka --> auth: broker ack
     auth -> adb: UPDATE outbox SET published_at = now()
   end
 
-  nats -> core: user.registered\n(durable consumer)
+  kafka -> core: user.registered\n(consumer group core)
   core -> edb: INSERT профиль\n(идемпотентно по user_id)
-  core --> nats: ack
+  core --> kafka: commit offset
+  kafka -> notification: identity.email_confirmation.requested\n(consumer group notification)
+  notification -> ndb: processed_event + delivery
+  notification --> kafka: commit offset
 end
 
-note over auth, nats
+note over auth, kafka
   Упали между publish и published_at -> событие уйдёт повторно.
-  Core идемпотентен по user_id — дубль профиля невозможен.
+  Consumers идемпотентны по event_id.
+  Raw confirmation token не попадает в Kafka.
 end note
 @enduml

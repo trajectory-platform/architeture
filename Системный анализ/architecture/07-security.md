@@ -1,67 +1,69 @@
 # 07 — Безопасность
 
-## Модель аутентификации
+## Аутентификация и identity
 
-Auth Service владеет идентичностью и подписывает токены; **проверяют токены все остальные сами**, локально, без сетевого вызова Auth.
+Auth Service владеет identity, способами входа, sessions, ролями, permissions и signing keys. Поддерживаются password и OAuth через Яндекс ID, VK ID и Google. Совпадение OAuth email не связывает аккаунты автоматически.
 
-### Токены
+User identity совмещает роли `student`, `teacher`, `representative`. Staff identity отделена и получает одну или несколько административных ролей. Учебные и staff роли не совмещаются.
 
-| Токен | Выдаёт | Время жизни | Назначение |
-|---|---|---|---|
-| Access JWT | Auth | короткое (~10 мин) | Авторизация REST-запросов через Gateway |
-| Refresh token | Auth | долгое (дни), ротируется | Обновление access-токена; хранится в httpOnly cookie |
-| Room JWT | Core (`JoinLesson`) | очень короткое (~1 мин на подключение) | Подключение WebSocket к конкретной комнате |
-| LiveKit access token | Core (`JoinLesson`, LiveKit server SDK) | на сессию урока | Подключение WebRTC к комнате LiveKit |
+Статусы identity: `PENDING_EMAIL`, `ACTIVE`, `BLOCKED`, `DELETION_SCHEDULED`, `DELETED`. Неподтверждённая identity через 30 дней анонимизируется.
 
-### JWKS: валидация без сетевого хопа
+## Токены и sessions
 
-- Auth подписывает access-токены асимметрично (RS256/EdDSA) и публикует публичные ключи на JWKS-эндпоинте.
-- Gateway и Realtime кэшируют JWKS (Redis + in-memory, обновление по TTL и по `kid`-промаху) и проверяют подпись локально.
-- Ротация ключей: новый ключ добавляется в JWKS заранее, токены подписываются им после прогрева кэшей; старый ключ удаляется после истечения всех подписанных им токенов.
-- Auth дёргают по сети только login / refresh / logout — он не является точкой отказа на каждый запрос.
+| Token | Выдаёт | Назначение |
+|---|---|---|
+| Access JWT | Auth | Короткий доступ к REST/gRPC context |
+| Refresh token | Auth | Ротация внутри session family; raw token хранится только у клиента |
+| Room JWT | Core | Вход по WebSocket в один `lesson_id` |
+| LiveKit token | Core | WebRTC grants одной комнаты |
 
-### Refresh-флоу
+Access JWT подписывается Ed25519 и содержит `sub`, `jti`, `identity_type`, `roles[]`, `permissions[]`, `session_id`, `iat`, `exp`, `iss`, `aud`. Gateway и сервисы проверяют подпись локально по JWKS.
 
-1. Login → пара access + refresh; refresh — в httpOnly Secure cookie, access — в память SPA.
-2. Access истёк → `POST /auth/refresh` → новая пара; refresh-токен **ротируется** (старый помечается использованным).
-3. Повторное использование уже ротированного refresh-токена = признак кражи → вся цепочка токенов пользователя отзывается.
-4. Logout → refresh удаляется; короткий TTL access-токена ограничивает окно после отзыва (при необходимости — блэклист jti в Redis).
+Session соответствует refresh family. Максимум 10 активных sessions на identity. Inactivity TTL — 30 дней. Повторное использование ROTATED/REVOKED refresh token отзывает всю family и создаёт security event.
 
-## Авторизация (роли и доступ)
+## Авторизация
 
-Роли: `student`, `teacher`, `admin` — клейм в access JWT. Правило: **roles в токене, ownership в данных**. Токен говорит «это преподаватель», но «может ли он видеть этот урок» проверяет Core по своим таблицам (членство в уроке, в чате, в тикете). Никаких ACL в JWT.
+Правило: **roles и permissions описывают возможность, membership подтверждает доступ к объекту**.
 
-Ключевые проверки:
-
-| Ресурс | Проверка (в Core) |
+| Ресурс | Проверка владельца |
 |---|---|
-| Урок / комната | `user_id ∈ {lesson.teacher_id, lesson.student_id}` и текущее время в окне урока |
-| Чат | строка в `chat_members` |
-| Тикет поддержки | участник тикета или `role = admin` |
-| Расписание преподавателя | запись — только владелец; чтение слотов — любой студент |
-| Баланс / леджер | только владелец счёта (admin — через отдельные admin-эндпоинты) |
+| Урок и запись | Core: строка `lesson_participants`; представитель не входит автоматически |
+| Чат и support ticket | Core: membership либо отдельное admin permission |
+| Курс, задание, тест, материал | Learning: ownership/enrollment/group membership |
+| Баланс и ledger | Billing: владелец account либо finance permission |
+| Notification | Notification: `notification.user_id == caller.identity_id` |
 
-## Вход в комнату урока
+Gateway может отклонить запрос без permission, но сервис-владелец всегда повторяет проверку. Клиентские roles/permissions используются только для UI.
 
-`POST /lessons/{id}/join` — единственная дверь в realtime-слой:
+Системная роль `superadmin` неизменяема. Нельзя отозвать роль, заблокировать или удалить последнего активного superadmin. `*_edit` требует соответствующего `*_view`.
 
-1. Gateway валидирует access JWT → Core.
-2. Core: членство + временное окно → минтит room JWT (клеймы: `lesson_id`, `user_id`, `role`) и LiveKit-токен (grants только на эту комнату: publish/subscribe, право закрыть комнату — только у преподавателя).
-3. Realtime валидирует room JWT при WebSocket-upgrade; LiveKit валидирует свой токен сам.
+## Вход в комнату
 
-Свойство: ни Realtime, ни LiveKit не ходят в базы за правами — всё нужное в токенах, выданных единственным авторитетом (Core).
+`JoinLesson` проверяет membership и временное окно. Core выдаёт room JWT и LiveKit token только для конкретного `lesson_id`. Realtime и LiveKit не читают доменные БД. Каждый урок имеет новую отдельную доску.
+
+## Секреты и персональные данные
+
+- Password хранится как Argon2id hash; до hash действует предел 1024 UTF-8 bytes.
+- Refresh, reset, confirmation и invitation tokens хранятся только как SHA-256 hashes.
+- Private signing keys зашифрованы KEK из secret store.
+- Raw tokens, password, OAuth provider tokens, KEK и private keys запрещены в logs, events и DLQ.
+- Notification не получает полный профиль или private chat content.
+- Reset и confirmation events содержат `delivery_request_id`; URL выдаётся Notification через workload-authenticated Auth RPC.
+- Recording требует явного согласия участников, scoped access и удаление через один месяц.
+
+Kafka topics с PII используют отдельные ACL и короткий retention. DLQ содержит только разрешённый безопасный payload либо redacted metadata.
 
 ## Защита периметра
 
-- **TLS везде**: Nginx терминирует HTTPS/WSS; внутренняя сеть — закрытая Docker-сеть, наружу торчат только Nginx и LiveKit-порты.
-- gRPC-порты сервисов и базы **не публикуются** наружу.
-- LiveKit-вебхуки в Core — проверка подписи вебхука (LiveKit подписывает запросы).
-- Двухслойный rate limiting: local limit/concurrency в Nginx и атомарный Redis token-bucket в Gateway. Auth, refresh и денежные mutation-маршруты fail-closed при отказе Redis; обычное чтение — fail-open только при действующем Nginx-лимите и с алертом. Подробности — [API Gateway](../services/api-gateway.md#rate-limiting).
-- Файлы: presigned URL MinIO с коротким TTL; права на объект проверяет Core до выдачи URL ([06](06-data-storage.md)); валидация типа/размера при выдаче presigned PUT.
-- Секреты (ключи подписи, креды БД, LiveKit API key) — через переменные окружения/secret-хранилище, не в репозитории.
-- Пароли — argon2id; идентификаторы — uuid (не перечислимы).
-- Notification Service не получает пароль, refresh-токен, полный профиль или содержимое чата. Reset-секреты и delivery payload не попадают в NATS/DLQ. Если доменный event по контракту содержит PII (например, legacy `user.registered.email`), subject защищён отдельными ACL и коротким retention; DLQ хранит только безопасные metadata (digest, размер и redacted reference), но не raw payload и никогда не логируется. Настройки каналов и inbox живут в отдельной БД Notification.
+- HTTPS/WSS снаружи; внутренние gRPC и БД не публикуются.
+- LiveKit webhooks проходят signature verification.
+- Nginx и Gateway применяют независимые rate limits.
+- Login, refresh, password recovery и денежные mutations fail-closed при недоступности stateful limiter.
+- S3 доступ выдаётся коротким presigned URL после проверки права, размера и назначения.
+- Service DB credentials изолированы; cross-service joins запрещены.
 
-## Изоляция данных
+## Audit и анонимизация
 
-Принцип «база на сервис» — это и граница безопасности: учётка education_db не имеет прав на billing_db. Компрометация одного сервиса не открывает леджер. Внутренние gRPC-вызовы несут идентичность исходного пользователя в metadata (подписанный контекст), а не «системного суперпользователя» — сервис-получатель повторно проверяет права на свои данные.
+Каждый сервис пишет audit своих изменений в своей БД и той же транзакции, что бизнес-изменение. Общий экран строится асинхронной read model, без распределённой ACID transaction.
+
+Auth audit использует псевдонимный `audit_ref`. Анонимизация удаляет mapping identity-to-audit, не изменяя append-only журнал. Audit никогда не содержит secrets.

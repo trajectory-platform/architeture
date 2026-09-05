@@ -6,6 +6,8 @@
 
 Full auth_db schema as goose migrations, embedded and applied on service start. Source DDL: [auth.md — Данные](../../../services/auth.md), ER: [auth-db.puml](../../../diagrams/db/auth-db.puml).
 
+> This task records the initial schema already delivered in T01–T11. Do not rewrite these migrations. T21 adds forward-only migrations for the target identity/access/session model from ADR-007.
+
 ## Scope
 
 In — `auth-service/internal/migrations/`:

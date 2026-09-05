@@ -9,27 +9,31 @@ Person(teacher, "Teacher")
 System_Boundary(trajectory, "Trajectory Platform") {
     Container(spa, "Web App (SPA)", "React / TypeScript", "Календарь, бронирования, комната урока (Yjs-доска), чаты, биллинг")
 
-    Container(nginx, "Nginx", "Reverse proxy", "TLS-терминация; маршрутизация /api -> gateway, /ws -> realtime")
+    Container(nginx, "Nginx", "Reverse proxy", "TLS-терминация; /api -> gateway, /ws/rooms -> realtime, /ws/notifications -> notification")
 
     Container(gateway, "API Gateway", "Go", "REST-граница: валидация JWT (JWKS), rate limiting, трансляция REST -> gRPC, OpenAPI")
     Container(auth, "Auth Service", "Go", "Идентичность: регистрация, login, refresh-токены, публикация JWKS")
-    Container(core, "Core Education Service", "Go", "Расписание, booking-сага, уроки (JoinLesson, вебхуки LiveKit), чаты, поддержка, отчёты, outbox")
+    Container(core, "Core Education Service", "Go", "Профили, расписание, брони, уроки, записи, чаты, поддержка, outbox")
+    Container(learning, "Learning Service", "Go", "Курсы, группы, зачисления, задания, тесты, материалы и прогресс")
     Container(billing, "Billing Service", "Go", "Append-only ledger, холды (PlaceHold/Capture/Release), идемпотентность, outbox")
     Container(realtime, "Realtime Service", "Go", "WebSocket-хаб: Yjs-relay (append+broadcast+replay), чат комнат, presence")
     Container(notification, "Notification Service", "Go", "Настройки, inbox и асинхронная доставка in-app/email/push")
 
     ContainerDb(pg_auth, "auth_db", "PostgreSQL", "identities, refresh_tokens, ключи")
-    ContainerDb(pg_edu, "education_db", "PostgreSQL", "bookings (tstzrange excl.), lessons, chats, messages, reports, outbox")
+    ContainerDb(pg_edu, "education_db", "PostgreSQL", "bookings, participants, lessons, recordings, chats, support, outbox")
+    ContainerDb(pg_learning, "learning_db", "PostgreSQL", "courses, groups, enrollments, homework, tests, materials, progress, outbox")
     ContainerDb(pg_billing, "billing_db", "PostgreSQL", "ledger_entries, holds, outbox")
     ContainerDb(pg_rt, "realtime_db", "PostgreSQL", "board_updates, board_snapshots")
     ContainerDb(pg_notification, "notification_db", "PostgreSQL", "preferences, notifications, deliveries, processed_events")
 
-    ContainerDb(redis, "Redis", "Redis", "Кэш, presence, rate limiting, fan-out между инстансами realtime")
-    ContainerQueue(nats, "NATS JetStream", "NATS", "Durable-события: user.*, booking.*, lesson.*, payment.*, progress.*")
+    ContainerDb(redis, "Redis", "Redis", "Кэш, presence, rate limiting, fan-out Realtime и Notification")
+    ContainerQueue(kafka, "Apache Kafka", "KRaft", "Domain topics, partitions, consumer groups, replay и DLQ")
     ContainerDb(minio, "MinIO", "S3-compatible", "Вложения, материалы уроков, архив досок (presigned URL)")
 }
 
 System_Ext(livekit, "LiveKit", "WebRTC SFU: видео, аудио, screen share")
+System_Ext(email, "Email provider", "Транзакционные письма")
+System_Ext(push, "Push provider", "Этап 2")
 
 Rel(student, spa, "Использует", "HTTPS")
 Rel(teacher, spa, "Использует", "HTTPS")
@@ -39,28 +43,36 @@ Rel(spa, livekit, "Медиа", "WebRTC")
 Rel(spa, minio, "Загрузка/скачивание файлов", "HTTPS, presigned URL")
 
 Rel(nginx, gateway, "/api/*", "HTTP")
-Rel(nginx, realtime, "/ws/*", "WebSocket")
+Rel(nginx, realtime, "/ws/rooms/*", "WebSocket")
+Rel(nginx, notification, "/ws/notifications", "WebSocket")
 
 Rel(gateway, auth, "Login, Refresh", "gRPC")
 Rel(gateway, core, "Слоты, брони, уроки, чаты, отчёты", "gRPC")
+Rel(gateway, learning, "Курсы, группы, задания, материалы, прогресс", "gRPC")
 Rel(gateway, billing, "GetBalance, TopUp", "gRPC")
 Rel(gateway, notification, "Inbox, настройки уведомлений", "gRPC")
 
 Rel(core, billing, "PlaceHold (booking-сага, Idempotency-Key)", "gRPC")
 Rel(realtime, core, "SaveMessage, авторизация", "gRPC")
 
-Rel(core, nats, "publish через outbox / consume", "NATS")
-Rel(billing, nats, "publish через outbox / consume", "NATS")
-Rel(notification, nats, "durable consume; delivery events", "NATS")
+Rel(auth, kafka, "publish через outbox", "Kafka protocol")
+Rel(core, kafka, "publish через outbox / consume", "Kafka protocol")
+Rel(learning, kafka, "publish через outbox / consume", "Kafka protocol")
+Rel(billing, kafka, "publish через outbox / consume", "Kafka protocol")
+Rel(notification, kafka, "consume; publish delivery events", "Kafka protocol")
 
 Rel(auth, pg_auth, "R/W", "SQL")
 Rel(core, pg_edu, "R/W", "SQL")
+Rel(learning, pg_learning, "R/W", "SQL")
 Rel(billing, pg_billing, "R/W", "SQL")
 Rel(realtime, pg_rt, "append / replay лога доски", "SQL")
 Rel(notification, pg_notification, "R/W", "SQL")
+Rel(notification, email, "Доставка email", "HTTPS")
+Rel(notification, push, "Доставка push", "HTTPS")
 
 Rel(gateway, redis, "Кэш JWKS, rate limiting", "RESP")
 Rel(realtime, redis, "Presence, fan-out (Pub/Sub)", "RESP")
+Rel(notification, redis, "In-app fan-out (Pub/Sub)", "RESP")
 
 Rel(core, minio, "Выдача presigned URL", "S3 API")
 Rel(core, livekit, "Минт токенов, закрытие комнат", "Server SDK")

@@ -19,7 +19,7 @@ entity "holds" as holds {
   --
   * account_id : uuid
   * amount : bigint  -- CHECK (amount > 0)
-  * reference_id : uuid  -- booking_id в Core (без FK)
+  * reference_id : uuid  -- booking_participant_id в Core (без FK)
   * status : text  -- ACTIVE | CAPTURED | RELEASED
   * idempotency_key : text <<UQ>>
   * created_at : timestamptz
@@ -54,6 +54,8 @@ note bottom of ledger
 end note
 
 note bottom of holds
+  отдельный hold на каждого ученика;
+  amount = фиксированная цена ученика;
   терминальные статусы финальны;
   повторная доставка события
   на CAPTURED/RELEASED — no-op

@@ -7,7 +7,7 @@ participant "Core Education\n(booking)" as core
 database "education_db" as edb
 participant "Billing" as billing
 database "billing_db" as bdb
-queue "NATS JetStream" as nats
+queue "Apache Kafka" as kafka
 
 spa -> gw: POST /bookings\nIdempotency-Key: K
 gw -> gw: валидация JWT (JWKS, локально)
@@ -28,7 +28,7 @@ alt слот пересекается
   core --> gw: FailedPrecondition (slot taken)
   gw --> spa: 409 Conflict
 else слот свободен
-  core -> billing: PlaceHold(student, amount,\nreference=booking_id, key=K)
+  core -> billing: PlaceHold(student, fixed_amount,\nreference=booking_participant_id, key=K)
   group Транзакция Billing (billing_db)
     billing -> bdb: баланс = SUM(ledger) - активные холды
     billing -> bdb: INSERT holds (idempotency_key=K UNIQUE)
@@ -47,7 +47,7 @@ else слот свободен
     end
     core --> gw: Booking{CONFIRMED}
     gw --> spa: 201 Created
-    core -> nats: (outbox relay) publish booking.confirmed
+    core -> kafka: (outbox relay) publish booking.confirmed\nkey=booking_id, acks=all
   else таймаут / исход неизвестен
     note over core
       Booking остаётся PENDING.

@@ -23,6 +23,7 @@ entity "board_snapshots" as snapshots {
 updates }o..o| snapshots : "компакция (Node-сайдкар):\nY.mergeUpdates(snapshot, tail)\n-> новый snapshot;\nстарые updates -> delete\nили архив в MinIO"
 
 note bottom of updates
+  lesson_id = новая независимая доска урока;
   seq выдаёт БД при append:
   COALESCE(MAX(seq), 0) + 1 в транзакции;
   гонка инстансов -> PK-конфликт + retry.

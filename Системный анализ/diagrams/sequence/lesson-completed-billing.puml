@@ -1,57 +1,55 @@
 @startuml lesson-completed-billing
-title Завершение урока: захват холда и журнал прогресса
+title Завершение урока: списание с учеников и обновление прогресса
 
 participant "LiveKit" as lk
-participant "Core Education\n(lessons)" as core
+participant "Core Education" as core
 database "education_db" as edb
-queue "NATS JetStream" as nats
-participant "Billing\n(consumer)" as billing
+queue "Apache Kafka" as kafka
+participant "Billing\n(consumer group)" as billing
 database "billing_db" as bdb
-participant "Core: reports\n(consumer)" as reports
+participant "Learning\n(consumer group)" as learning
+database "learning_db" as ldb
+participant "Notification\n(consumer group)" as notification
 
 lk -> core: webhook room_finished
-group Транзакция (education_db)
-  core -> edb: UPDATE lessons SET status=COMPLETED
-  core -> edb: INSERT outbox('lesson.completed')
+group Transaction education_db
+  core -> edb: lesson=COMPLETED\nattendance per student
+  core -> edb: INSERT outbox lesson.completed\nparticipant outcomes
 end
-core -> nats: (outbox relay) publish lesson.completed
+core -> kafka: publish lesson.completed\nkey=lesson_id, acks=all
 
 par Billing: деньги
-  nats -> billing: deliver lesson.completed (durable)
-  group Транзакция (billing_db)
-    billing -> bdb: holds: ACTIVE -> CAPTURED (по reference_id)
-    billing -> bdb: ledger: debit студента / credit преподавателя
-    billing -> bdb: INSERT outbox('payment.captured')
-  end
-  billing -> nats: ack
-  note right of billing
-    идемпотентно: повторная доставка
-    на CAPTURED-холд — no-op
-  end note
-  billing -> nats: (relay) publish payment.captured
-  nats -> core: deliver payment.captured
-  core -> edb: пометить урок оплаченным
-else Reports: прогресс
-  nats -> reports: deliver lesson.completed (durable)
-  group Транзакция (education_db)
-    reports -> edb: INSERT processed_lessons(lesson_id)\nON CONFLICT DO NOTHING
-    alt урок уже обработан
-      reports -> nats: ack (no-op)
-    else первый раз
-      reports -> edb: счётчик пары студент×преподаватель +1
-      alt счётчик кратен 5
-        reports -> edb: INSERT запись журнала прогресса
-        reports -> edb: INSERT outbox('progress.milestone_reached')
-      end
-      reports -> nats: ack
+  kafka -> billing: lesson.completed
+  loop каждый student participant
+    alt присутствовал или пропустил free-cancel window
+      billing -> bdb: hold ACTIVE -> CAPTURED\nfixed price debit/credit
+    else своевременно отменил
+      billing -> bdb: hold -> RELEASED / partial result
     end
   end
+  billing -> bdb: INSERT outbox payment.captured
+  billing -> kafka: commit lesson offset
+  billing -> kafka: publish payment.captured
+else Learning: прогресс
+  kafka -> learning: lesson.completed
+  group Transaction learning_db
+    learning -> ldb: INSERT processed_events(event_id)\nON CONFLICT DO NOTHING
+    learning -> ldb: update progress только\nдля фактически участвовавших
+  end
+  learning -> kafka: commit lesson offset
+else Notification
+  kafka -> notification: lesson.completed
+  notification -> notification: materialize inbox idempotently
+  notification -> kafka: commit lesson offset
 end
 
-note over nats
-  Консьюмеры независимы: отставание биллинга
-  не блокирует журнал прогресса, и наоборот.
-  At-least-once + идемпотентность = ничего не теряется
-  и не задваивается.
+kafka -> core: payment.captured
+core -> edb: update payment projection
+core -> kafka: commit billing offset
+
+note over kafka
+  Consumer groups независимы.
+  Offset фиксируется только после DB commit.
+  Повтор события безопасен по event_id.
 end note
 @enduml

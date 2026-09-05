@@ -6,6 +6,8 @@
 
 Pure models layer (`internal/models`) + the service interfaces (`internal/service`) that all later tasks implement against. Zero I/O, stdlib-only.
 
+> This task records the initial one-role domain model. ADR-007 replaces it with user/staff subtypes, role bindings, permissions and explicit sessions. T21–T22 perform that evolution without erasing the delivered baseline.
+
 ## Scope
 
 In — `internal/models`:

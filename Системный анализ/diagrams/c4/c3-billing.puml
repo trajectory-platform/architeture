@@ -6,14 +6,14 @@ title Trajectory — C3: Billing Service (components)
 Container(gateway, "API Gateway", "Go", "GetBalance, TopUp")
 Container(core, "Core Education Service", "Go", "PlaceHold в booking-саге; консьюмер payment.captured")
 ContainerDb(pg_billing, "billing_db", "PostgreSQL", "ledger_entries, holds, idempotency_keys, outbox")
-ContainerQueue(nats, "NATS JetStream", "NATS", "booking.cancelled, lesson.completed -> | -> payment.captured, hold.released")
+ContainerQueue(kafka, "Apache Kafka", "KRaft", "education events consume; billing events publish")
 
 Container_Boundary(billing, "Billing Service") {
     Component(grpc_api, "gRPC API", "Go, billing.v1", "PlaceHold, CaptureHold, ReleaseHold, GetBalance, TopUp")
     Component(idem, "Idempotency Interceptor", "Go interceptor", "Ключ из metadata; повтор -> сохранённый ответ; другое тело -> AlreadyExists")
     Component(ledger, "Ledger", "Go package", "Append-only строки; баланс = SUM(amount); никаких UPDATE/DELETE")
     Component(holds, "Holds", "Go package", "ACTIVE -> CAPTURED | RELEASED; захват = статус + строки леджера + outbox одной транзакцией")
-    Component(consumers, "Event Consumers", "Go goroutines", "booking.cancelled -> ReleaseHold; lesson.completed -> CaptureHold; идемпотентно, ack после коммита")
+    Component(consumers, "Event Consumers", "Go goroutines", "booking.cancelled / lesson.completed; идемпотентно, offset после commit")
     Component(reconciler, "Reconciler", "Go goroutine", "Алерты: ACTIVE-холды старше порога, расхождения захватов и леджера")
     Component(outbox_relay, "Outbox Relay", "Go goroutine", "FOR UPDATE SKIP LOCKED -> publish -> ack -> published_at")
 }
@@ -30,13 +30,13 @@ Rel(holds, ledger, "строки захвата/возврата в той же 
 Rel(ledger, pg_billing, "INSERT / SUM ledger_entries", "SQL")
 Rel(holds, pg_billing, "holds + ledger + outbox (одна транзакция)", "SQL")
 
-Rel(nats, consumers, "booking.cancelled, lesson.completed (durable)", "NATS")
+Rel(kafka, consumers, "booking.cancelled, lesson.completed", "Kafka protocol")
 Rel(consumers, holds, "Release / Capture по reference_id")
 
 Rel(reconciler, pg_billing, "проверка инвариантов", "SQL")
 
 Rel(outbox_relay, pg_billing, "неопубликованные строки outbox", "SQL")
-Rel(outbox_relay, nats, "publish payment.captured, hold.released", "NATS")
+Rel(outbox_relay, kafka, "publish payment.captured, hold.released", "Kafka protocol")
 
 SHOW_LEGEND()
 @enduml

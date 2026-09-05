@@ -98,7 +98,7 @@ Baseline: [Effective Go](https://go.dev/doc/effective_go) + [Google Go Style Gui
 ### Context & concurrency
 
 - `ctx context.Context` is the first parameter of every function that does I/O. Never stored in structs.
-- Every **outbound** call (SQL, Redis, NATS, gRPC client) runs under a deadline — either the inherited one or `context.WithTimeout`. A call without a deadline is a bug ([03 — Communication](../architecture/03-communication.md)).
+- Every **outbound** call (SQL, Redis, Kafka, gRPC client) runs under a deadline — either the inherited one or `context.WithTimeout`. A call without a deadline is a bug ([03 — Communication](../architecture/03-communication.md)).
 - Background goroutines (outbox relay, key rotation ticker) are started in `internal/app`, stop on context cancellation, and register their teardown with `pkg/closer` for graceful shutdown.
 
 ### Logging
@@ -121,7 +121,7 @@ Baseline: [Effective Go](https://go.dev/doc/effective_go) + [Google Go Style Gui
 | JWT / JWK / JWKS | `lestrrat-go/jwx/v2` |
 | Password hashing | `golang.org/x/crypto/argon2` (argon2id) |
 | gRPC | `google.golang.org/grpc` + buf-generated stubs |
-| NATS | `nats-io/nats.go` (jetstream API) |
+| Kafka | `twmb/franz-go` (`kgo` API) |
 | Redis | `redis/go-redis/v9` |
 | Logging | `log/slog` (stdlib), JSON to stdout, propagated via `context` |
 | Config | `caarlos0/env/v11` (struct tags) + `joho/godotenv` (.env) |
@@ -140,21 +140,21 @@ Baseline: [Effective Go](https://go.dev/doc/effective_go) + [Google Go Style Gui
 ## 5. Testing
 
 - **Unit tests** (no I/O): all of `models/` and `service/` with port fakes — hand-written fakes in `internal/service/fakes_test.go`, no mock-generation frameworks. Table-driven where natural. Use case logic should reach high coverage because it carries the security invariants.
-- **Integration tests**: `repository/` and the infrastructure packages against real Postgres/Redis/NATS via testcontainers, build tag `//go:build integration`, run with `make test-integration`.
+- **Integration tests**: `repository/` and the infrastructure packages against real Postgres/Redis/Kafka via testcontainers, build tag `//go:build integration`, run with `make test-integration`.
 - **E2E (service-level)**: spin up the whole service binary against containers and exercise the gRPC API for key flows (register → login → refresh → reuse-detection → logout).
 - Determinism: time is a port (`Clock` interface) defined in `service`; tests inject a fixed clock. No `time.Sleep` synchronization in tests.
 - A task is "done" only with tests proving its acceptance criteria.
 
 ## 6. Configuration
 
-- Env vars only, prefixed per service: `AUTH_DB_DSN`, `AUTH_GRPC_ADDR`, `AUTH_HTTP_ADDR`, `AUTH_NATS_URL`, `AUTH_REDIS_ADDR`, `AUTH_ACCESS_TTL`, `AUTH_REFRESH_TTL`, `AUTH_KEK` ...
+- Env vars only, prefixed per service: `AUTH_DB_DSN`, `AUTH_GRPC_ADDR`, `AUTH_HTTP_ADDR`, `AUTH_KAFKA_BROKERS`, `AUTH_REDIS_ADDR`, `AUTH_ACCESS_TTL`, `AUTH_REFRESH_TTL`, `AUTH_KEK` ...
 - Parsed in `internal/config` into a single `Config` struct at startup with `caarlos0/env/v11` struct tags, after a best-effort `joho/godotenv` `.env` read (real env wins); invalid/missing required values → process exits non-zero with a clear message. No config reads anywhere else in the code.
 - Secrets (KEK, DB creds) never logged, never committed; compose uses `.env` (gitignored) with a committed `.env.example`.
 
 ## 7. Observability (every service, day one)
 
 - gRPC server with `pkg/grpcx` interceptor chain: recovery → OTel → logging → (validation).
-- HTTP server exposes `/metrics` (Prometheus), `/healthz` (liveness), `/readyz` (readiness: DB ping, NATS connected).
+- HTTP server exposes `/metrics` (Prometheus), `/healthz` (liveness), `/readyz` (readiness: DB ping, Kafka metadata reachable).
 - RED metrics per gRPC method come from interceptors; each service adds its domain metrics (auth: outbox depth, refresh reuse detections, active signing key age).
 
 ## 8. Git & process

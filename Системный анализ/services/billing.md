@@ -1,6 +1,6 @@
 # Billing Service
 
-Billing владеет деньгами — и только деньгами. Модель — **append-only ledger**: баланс пользователя — это `SUM()` строк леджера, никогда не мутируемая колонка. Billing ничего не знает про уроки, слоты и расписание: он оперирует холдами с внешним `reference_id` (uuid брони) и реагирует на события. Любое движение денег идемпотентно по `Idempotency-Key`.
+Billing владеет деньгами — и только деньгами. Модель — **append-only ledger**: баланс пользователя — это `SUM()` строк леджера, никогда не мутируемая колонка. Billing ничего не знает про уроки, слоты и расписание: он оперирует холдами с внешним `reference_id` (`booking_participant_id`) и реагирует на события. Любое движение денег идемпотентно по `Idempotency-Key`.
 
 Диаграммы: [C3 — компоненты](../diagrams/c4/c3-billing.puml) · [ER — billing_db](../diagrams/db/billing-db.puml) · [Sequence — booking-сага (PlaceHold)](../diagrams/sequence/booking-saga.puml) · [Sequence — завершение урока (CaptureHold)](../diagrams/sequence/lesson-completed-billing.puml)
 
@@ -29,7 +29,7 @@ Billing владеет деньгами — и только деньгами. М
 | `GetBalance` | Gateway | Доступный баланс = `SUM(ledger)` − активные холды | — |
 | `TopUp` | Gateway | Пополнение: строка `topup` в леджер | `AlreadyExists` (повтор ключа с другим телом) |
 
-`CaptureHold`/`ReleaseHold` существуют и как RPC (для admin-операций и reconciler'а), но штатный путь — события JetStream, не синхронные вызовы: отставание Billing не должно блокировать Core ([03](../architecture/03-communication.md)).
+`CaptureHold`/`ReleaseHold` существуют и как RPC (для admin-операций и reconciler'а), но штатный путь — события Kafka, не синхронные вызовы: отставание Billing не должно блокировать Core ([03](../architecture/03-communication.md)).
 
 `TopUp` на MVP — внутренняя операция (тестовые начисления, admin). Интеграция с внешним PSP — будущее отдельное решение: вебхук провайдера → `TopUp` с идемпотентным ключом из id платежа провайдера.
 
@@ -38,11 +38,11 @@ Billing владеет деньгами — и только деньгами. М
 | Событие | Направление | Реакция |
 |---|---|---|
 | `booking.cancelled` | потребляет | `ReleaseHold(reference_id)`; payload несёт политику: `release_full` / `release_partial(amount)` — частичный возврат = release + строки леджера на штраф |
-| `lesson.completed` | потребляет | `CaptureHold(reference_id)`: debit студента / credit преподавателя |
+| `lesson.completed` | потребляет | По каждому participant применить переданный outcome: capture фиксированной цены либо ранее рассчитанный release |
 | `payment.captured` | публикует | Через outbox в транзакции захвата; Core помечает урок оплаченным |
 | `hold.released` | публикует | Через outbox в транзакции release; для нотификаций/аудита |
 
-Консьюмеры durable, ack после успешной транзакции, обработка идемпотентна: повторная доставка на уже CAPTURED/RELEASED холд — no-op.
+Kafka consumers фиксируют offset после успешной транзакции. Обработка идемпотентна: повторная доставка на уже CAPTURED/RELEASED hold — no-op.
 
 ## Данные: billing_db
 
@@ -83,8 +83,8 @@ PlaceHold ──► ACTIVE ──┬──(lesson.completed)──► CAPTURED  
 ## Ключевые потоки
 
 - **PlaceHold (синхронный, в booking-саге)** — [booking-saga.puml](../diagrams/sequence/booking-saga.puml). Транзакция: доступный баланс ≥ amount → `INSERT holds (ACTIVE, idempotency_key)`. Потерянный ответ → Core-reconciler повторяет с тем же ключом, Billing возвращает сохранённый исход.
-- **CaptureHold (по событию)** — [lesson-completed-billing.puml](../diagrams/sequence/lesson-completed-billing.puml). Одна транзакция: статус, пара строк леджера, outbox. Ack — после коммита.
-- **ReleaseHold (по событию)** — отмена брони валидна сразу в Core; деньги вернутся при первой доступности Billing, JetStream гарантирует доставку ([04](../architecture/04-sagas-and-consistency.md)).
+- **CaptureHold (по событию)** — [lesson-completed-billing.puml](../diagrams/sequence/lesson-completed-billing.puml). Одна транзакция: статус, пара строк ledger, outbox. Kafka offset фиксируется после commit.
+- **ReleaseHold (по событию)** — своевременная отмена валидна сразу в Core; деньги вернутся при первой доступности Billing, Kafka гарантирует доставку ([04](../architecture/04-sagas-and-consistency.md)). После окна бесплатной отмены Core публикует денежный результат, который сохраняет полное или частичное списание.
 - **Reconciliation** — инвариант для мониторинга: нет ACTIVE-холдов старше окна урока + порога; сумма захватов = сумме соответствующих строк леджера. Расхождение = алерт, не «авось».
 
 ## Безопасность
@@ -96,6 +96,6 @@ PlaceHold ──► ACTIVE ──┬──(lesson.completed)──► CAPTURED  
 ## Чего здесь нет — и почему
 
 - **Мутируемой колонки `balance`.** Кэш баланса — это оптимизация чтения (materialized view / Redis с инвалидацией), но источник истины всегда `SUM(ledger)`; на MVP индекса по `account_id` достаточно.
-- **Знания о предметной области.** Никаких `lesson_id`, `teacher_id`, цен — только `account_id`, `amount`, опаковый `reference_id`. Это позволяет переиспользовать Billing для любых будущих платных сущностей.
+- **Знания о предметной области.** Никаких `lesson_id`, `teacher_id`, attendance или cancellation windows — только `account_id`, зафиксированный `amount` и опаковый `reference_id`. Это позволяет переиспользовать Billing для любых будущих платных сущностей.
 - **Синхронных вызовов в Core.** Связь «урок завершён → захват» — только события: Billing может лежать час, деньги сойдутся после рестарта.
 - **Внешнего PSP.** Эквайринг — отдельная интеграция в будущем; модель готова (TopUp идемпотентен по внешнему id платежа).

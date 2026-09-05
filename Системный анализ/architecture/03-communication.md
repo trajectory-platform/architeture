@@ -1,99 +1,114 @@
 # 03 — Межсервисное взаимодействие
 
-Два механизма, жёсткое правило выбора:
+Два механизма:
 
-- **gRPC (синхронно)** — когда вызывающему нужен ответ *сейчас*, чтобы продолжить свою операцию.
-- **NATS JetStream (асинхронно)** — когда сервис сообщает *свершившийся факт*, на который другие реагируют. Вызывающий не ждёт.
+- **gRPC** — вызывающему нужен ответ для продолжения операции;
+- **Apache Kafka** — сервис сообщает совершившийся факт, а издатель не ждёт реакции потребителей.
 
-Если сомневаетесь — это событие. Синхронный вызов создаёт связность по доступности: Core, вызывающий Billing синхронно, недоступен, когда недоступен Billing. Таких пар должно быть мало и по делу.
-
-## Синхронное взаимодействие (gRPC)
-
-### Где используется
+## Синхронное взаимодействие
 
 | Вызов | Зачем синхронно |
 |---|---|
-| Gateway → Auth / Core / Billing | Каждый REST-запрос клиента — это ответ, который клиент ждёт |
-| Core → Billing `PlaceHold` | Бронирование не может стать CONFIRMED, пока деньги не зарезервированы — нужен ответ в той же операции |
-| Realtime → Core `SaveMessage`, `AuthorizeRoomJoin` | Персистентность чата и проверка прав — короткие запрос/ответ |
+| Gateway → Auth / Core / Learning / Billing / Notification | REST-запрос клиента требует ответа |
+| Core → Billing `PlaceHold` | Бронь не подтверждается до успешного резерва |
+| Realtime → Core `SaveMessage`, `AuthorizeRoomJoin` | Персистентность чата и fallback-проверка доступа |
+| Notification → Auth `GetPasswordResetDelivery` | Одноразовый reset URL нельзя помещать в Kafka |
 
-### Правила
+Правила:
 
-1. **Deadline на каждом вызове.** `context.WithTimeout` на стороне вызывающего; deadline распространяется по цепочке автоматически через gRPC. Вызов без дедлайна — баг.
-2. **Retry — только идемпотентных методов.** Методы помечаются идемпотентными явно (в proto-комментариях и в retry-конфиге клиента). `PlaceHold` с `Idempotency-Key` ретраить можно; метод без ключа — нет.
-3. **Idempotency-Key сквозной.** Клиент шлёт заголовок `Idempotency-Key` на любой POST, двигающий деньги или создающий бронирование. Gateway кладёт его в gRPC metadata, Core передаёт в Billing. Billing хранит ключ в уникальном индексе и на повтор возвращает сохранённый результат.
-4. **OpenTelemetry-интерсепторы с первого дня.** Unary/stream-интерсепторы на клиенте и сервере каждого сервиса; trace context — через metadata. Запрос трассируется от REST-границы через все хопы до SQL.
-5. **Ошибки — коды gRPC**, не строки: `NotFound`, `FailedPrecondition` (слот занят), `ResourceExhausted` (недостаточно средств), `AlreadyExists` (повтор идемпотентного вызова с другим телом).
+1. Каждый вызов имеет deadline.
+2. Автоматический retry разрешён только для идемпотентной операции.
+3. Денежные и создающие операции передают `Idempotency-Key` через gRPC metadata.
+4. OpenTelemetry context проходит через metadata.
+5. Доменные ошибки передаются кодами gRPC, не текстовым сравнением.
 
-### Контракты
+## Контракты
 
-Все `.proto` живут в отдельном репозитории `contracts` — единственном источнике межсервисных контрактов — и управляются **buf**:
+Все `.proto` живут в репозитории `contracts`:
 
+```text
+proto/trajectory/auth/v1/auth.proto
+proto/trajectory/education/v1/*.proto
+proto/trajectory/learning/v1/*.proto
+proto/trajectory/billing/v1/billing.proto
+proto/trajectory/notification/v1/notification.proto
+proto/trajectory/events/v1/*.proto
 ```
-proto/
-  trajectory/auth/v1/auth.proto
-  trajectory/education/v1/{scheduling,booking,lessons,chats,support,reports}.proto
-  trajectory/billing/v1/billing.proto
-  trajectory/events/v1/events.proto      # payload'ы событий JetStream — тоже protobuf
-```
 
-- `buf breaking` в CI — несовместимое изменение контракта не проходит ревью.
-- Go-стабы публикуются как версионированный модуль; каждый сервис обновляет зависимость отдельным совместимым PR.
-- OpenAPI хранится и проверяется в `contracts`; из него генерируется TypeScript-клиент фронтенда. Руками REST-типы не пишутся.
+Kafka payloads используют protobuf envelope. `buf lint`, `buf breaking` и code generation обязательны в CI. OpenAPI остаётся источником REST-контракта Gateway.
 
-## Асинхронное взаимодействие (NATS JetStream)
+## Асинхронное взаимодействие
 
-Обоснование выбора JetStream и отказа от Redis Pub/Sub — [ADR-003](../adr/ADR-003-nats-jetstream.md). Кратко: Pub/Sub — fire-and-forget; если Billing лежит в момент `lesson.completed`, деньги не сойдутся никогда. JetStream даёт персистентные стримы, ack, redelivery и durable consumers.
+Решение закреплено в [ADR-003](../adr/ADR-003-apache-kafka.md). Kafka работает в KRaft mode. Каждый потребитель использует отдельную consumer group. Обработка имеет семантику at-least-once.
+
+### Topics и ключи
+
+| Topic | Издатель | Примеры событий |
+|---|---|---|
+| `trajectory.auth.events.v1` | Auth | `user.registered`, `password.reset.requested`, `identity.email_confirmation.requested`, `identity.email_change.requested`, `identity.invitation.requested`, `identity.security_changed`, `identity.session_compromised` |
+| `trajectory.education.events.v1` | Core | `booking.*`, `lesson.*` |
+| `trajectory.learning.events.v1` | Learning | `homework.*`, `enrollment.*`, `progress.*` |
+| `trajectory.billing.events.v1` | Billing | `payment.captured`, `hold.released`, `payout.*` |
+| `trajectory.notification.events.v1` | Notification | `notification.created`, `notification.delivered`, `notification.failed` |
+
+Message key — `aggregate_id`. События одного агрегата сохраняют порядок в partition. Envelope содержит `event_id`, `event_type`, `occurred_at`, `schema_version`, `producer` и protobuf payload.
 
 ### Каталог событий
 
-Subject-схема: `trajectory.<domain>.<event>`. Payload — protobuf из `proto/trajectory/events/v1/`.
-
 | Событие | Издатель | Потребители | Реакция |
 |---|---|---|---|
-| `booking.confirmed` | Core | Notification | Уведомления участникам, материализация календаря |
-| `booking.cancelled` | Core | Billing, Notification | `ReleaseHold` — вернуть резерв на баланс; уведомить участников |
-| `lesson.started` | Core (по вебхуку LiveKit) | Realtime, reports, Notification | Метка фактического начала, таймер и уведомление при необходимости |
-| `lesson.completed` | Core | Billing, reports, Notification | Billing: `CaptureHold`; reports: инкремент прогресса; Notification: событие пользователю |
-| `payment.captured` | Billing | Core, Notification | Пометить урок оплаченным; отправить чек/подтверждение |
-| `progress.milestone_reached` | Core (reports) | Notification | Уведомление о новой записи журнала прогресса |
-| `user.registered` | Auth | Core, Notification | Создание профиля и начальных настроек уведомлений |
-| `password.reset.requested` | Auth | Notification | Отправка reset-ссылки; секрет URL забирается по защищённому Auth RPC, не из события |
+| `user.registered` | Auth | Core, Notification | Профиль; начальные настройки уведомлений |
+| `password.reset.requested` | Auth | Notification | Получить reset URL через защищённый Auth RPC и доставить |
+| `identity.email_confirmation.requested` | Auth | Notification | Получить одноразовые delivery data и отправить подтверждение email |
+| `identity.email_change.requested` | Auth | Notification | Подтвердить новый email и уведомить старый адрес |
+| `identity.invitation.requested` | Auth | Notification | Отправить приглашение сотруднику или ученику |
+| `identity.security_changed` | Auth | Notification | Создать in-app уведомление об изменении способа входа |
+| `identity.session_compromised` | Auth | Notification | Сообщить о refresh-token reuse и отзыве сессии |
+| `booking.confirmed` | Core | Notification | Уведомить участников |
+| `booking.cancelled` | Core | Billing, Notification | Исполнить полный/частичный возврат; уведомить |
+| `lesson.started` | Core | Realtime, Notification | Прогрев комнаты; in-app уведомление |
+| `lesson.completed` | Core | Billing, Learning, Notification | Захватить holds; обновить прогресс; уведомить |
+| `lesson.recorded` | Core | Learning, Notification | Добавить запись в материалы; уведомить участников |
+| `payment.captured` | Billing | Core, Learning, Notification | Пометить оплату; обновить доступ; уведомить |
+| `homework.assigned` | Learning | Notification | Уведомить ученика |
+| `homework.submitted` | Learning | Notification | Уведомить преподавателя |
+| `homework.reviewed` | Learning | Notification | Уведомить ученика |
+| `enrollment.expiring` | Learning | Core, Notification | Показать состояние доступа; уведомить |
+| `progress.milestone_reached` | Learning | Notification | Уведомить о достижении |
 
-### Dead-letter queue (DLQ)
+### Consumer contract
 
-У JetStream нет безопасного «автоматически переместить сообщение в DLQ» без логики консьюмера, поэтому это явный контракт обработки:
+1. Consumer читает событие в своей consumer group.
+2. Consumer проверяет `event_id` и применяет изменение в одной транзакции своей БД.
+3. Consumer фиксирует offset только после commit.
+4. Redelivery с тем же `event_id` становится no-op.
+5. Kafka offset не является бизнес-идентификатором.
 
-1. Каждый durable consumer задаёт `max_deliver` и backoff. Обработчик сохраняет receipt `event_id`/результат в своей БД; повторная доставка становится no-op.
-2. После последней неудачной попытки он публикует `events.v1.DeadLettered` в отдельный stream `TRAJECTORY_DLQ` с subject `trajectory.dlq.<service>.<consumer>` и ждёт JetStream ack.
-3. Только после подтверждённой публикации он ack'ает исходное сообщение. Падение между этими операциями может создать дубликат DLQ-сообщения, поэтому ключ дедупликации — `(event_id, consumer)`.
-4. DLQ — закрытый stream с ограниченным retention (14 дней по умолчанию), отдельными ACL и алертом на каждое новое сообщение. `failure_message` санитизируется; raw payload не пишется в логи. Replay — явная операторская команда в исходный subject с новым audit record, не автоматическая повторная доставка.
+### Dead-letter topics
+
+После ограниченного числа попыток consumer публикует `events.v1.DeadLettered` в `trajectory.dlq.<service>.<consumer>`. Затем consumer фиксирует offset исходного сообщения. Ключ дедупликации DLQ — `(event_id, consumer)`.
+
+DLQ имеет retention 14 дней, отдельные ACL и алерт. `failure_message` санитизируется. Raw password, token, private message и другие секреты не попадают в DLQ. Replay выполняется вручную с audit record.
 
 ### Transactional outbox
-
-Проблема: «записал в БД и опубликовал событие» — две системы, между ними можно упасть. Решение — outbox в той же транзакции:
 
 ```sql
 CREATE TABLE outbox (
     id           bigserial PRIMARY KEY,
     aggregate_id uuid        NOT NULL,
-    subject      text        NOT NULL,   -- 'trajectory.booking.confirmed'
-    payload      bytea       NOT NULL,   -- protobuf
+    topic        text        NOT NULL,
+    event_type   text        NOT NULL,
+    payload      bytea       NOT NULL,
     created_at   timestamptz NOT NULL DEFAULT now(),
-    published_at timestamptz             -- NULL = не опубликовано
+    published_at timestamptz
 );
 ```
 
-Поток:
+Сервис пишет доменное изменение и outbox row в одной Postgres transaction. Relay выбирает строки через `FOR UPDATE SKIP LOCKED`, публикует с `acks=all` и message key = `aggregate_id`, затем ставит `published_at`. Падение после publish до update приводит к повторной публикации; consumer deduplication обеспечивает корректность.
 
-1. Сервис в одной транзакции пишет доменное изменение **и** строку в `outbox`.
-2. Relay-горутина (в том же процессе) выбирает неопубликованные строки (`FOR UPDATE SKIP LOCKED` — безопасно при нескольких репликах), публикует в JetStream, ждёт ack, проставляет `published_at`.
-3. Упали между публикацией и `published_at` → событие уйдёт повторно → консьюмеры идемпотентны, всё сходится.
+## Что не ходит через Kafka
 
-Гарантия: **at-least-once, после коммита — обязательно**. Событие не может потеряться и не может уйти для откатившейся транзакции.
-
-## Что НЕ ходит через шину
-
-- **Yjs-апдейты доски** — это не межсервисные события, а realtime-поток клиентов; живут в WebSocket + Redis fan-out + лог апдейтов ([05](05-realtime-whiteboard.md)).
-- **Медиа** — только LiveKit.
-- **Запросы данных** («дай баланс») — это gRPC, события не используются как RPC.
+- Yjs board updates: WebSocket, Redis fan-out и Postgres log.
+- Медиа: LiveKit.
+- Запросы данных: gRPC.
+- Raw password, refresh/reset tokens, KEK и private signing keys.

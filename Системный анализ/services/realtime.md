@@ -43,7 +43,7 @@ gRPC-сервера у Realtime **нет** — никто не зовёт его
 |---|---|---|
 | `lesson.started` | потребляет (опционально) | Пре-создание структур комнаты (подписка на Redis-канал, прогрев) — оптимизация, не корректность |
 
-Realtime ничего не публикует в JetStream: его факты (presence, апдейты доски) — не межсервисные события ([03](../architecture/03-communication.md)).
+Realtime ничего не публикует в Kafka: его факты (presence, апдейты доски) — не межсервисные события ([03](../architecture/03-communication.md)).
 
 ## Компоненты
 
@@ -58,7 +58,7 @@ Realtime ничего не публикует в JetStream: его факты (p
 
 ## Данные: realtime_db
 
-ER-диаграмма: [realtime-db.puml](../diagrams/db/realtime-db.puml). DDL — в [06 — Данные](../architecture/06-data-storage.md): две таблицы, `board_updates (lesson_id, seq, update)` и `board_snapshots (lesson_id, upto_seq, snapshot)`.
+ER-диаграмма: [realtime-db.puml](../diagrams/db/realtime-db.puml). DDL — в [06 — Данные](../architecture/06-data-storage.md): две таблицы, `board_updates (lesson_id, seq, update)` и `board_snapshots (lesson_id, upto_seq, snapshot)`. Каждый `lesson_id` обозначает новую независимую доску; состояние предыдущего урока не продолжается автоматически.
 
 Механика `seq`: монотонный per-room счётчик выдаёт БД при append — `INSERT ... seq = COALESCE(MAX(seq), 0) + 1` в транзакции; гонка двух инстансов разрешается PK-конфликтом `(lesson_id, seq)` + retry. Глобального порядка между комнатами нет и не нужно.
 
@@ -104,4 +104,4 @@ ER-диаграмма: [realtime-db.puml](../diagrams/db/realtime-db.puml). DDL 
 - **Состояния в инстансах.** Всё восстановимое — в Redis и realtime_db; иначе падение инстанса = потеря данных и сложный failover.
 - **CRDT-мержа на сервере.** Нет зрелого Yjs на Go, и он не нужен: апдейты коммутативны и идемпотентны, мержат клиенты ([ADR-002](../adr/ADR-002-crdt-sync-path-a.md)).
 - **Персистентности чата.** Один владелец у всех чатов — Core; Realtime только форвардит с гарантией «дойдёт хотя бы раз» (ретраи по `message_id`).
-- **JetStream для board-апдейтов.** Это не межсервисные события, а клиентский поток: Redis Pub/Sub дешевле, а durable-гарантию даёт лог в Postgres, не шина.
+- **Kafka для board-апдейтов.** Это не межсервисные события, а клиентский поток: Redis Pub/Sub дешевле, а durable-гарантию даёт лог в Postgres, не шина.

@@ -3,16 +3,19 @@
 
 title Trajectory — C1: System Context
 
-Person(student, "Student", "Студент: бронирует уроки, занимается на доске, общается в чатах, пополняет баланс")
-Person(teacher, "Teacher", "Преподаватель: задаёт доступность, ведёт уроки, пишет заметки и отчёты")
-Person(admin, "Admin", "Администратор платформы: поддержка, управление пользователями")
+Person(student, "Student", "Ученик: бронирует уроки, учится по курсам, выполняет задания и тесты")
+Person(teacher, "Teacher", "Преподаватель: ведёт уроки, курсы и группы, проверяет работы")
+Person(representative, "Representative", "Представитель: оплачивает и бронирует занятия ученика")
+Person(admin, "Admin", "Администратор платформы: управление, поддержка, финансы и аудит")
 
-System(trajectory, "Trajectory Platform", "Платформа индивидуальных онлайн-занятий: расписание, бронирование с балансом, комнаты уроков с CRDT-доской, чаты, поддержка, отчёты")
+System(trajectory, "Trajectory Platform", "Платформа индивидуального и группового обучения: курсы, бронирование, уроки, CRDT-доска, задания, тесты, материалы, деньги и уведомления")
 
 System_Ext(livekit, "LiveKit (WebRTC SFU)", "Медиа-сервер: видео, аудио, screen share. Развёрнут рядом с платформой, но является сторонним готовым компонентом")
+System_Ext(email, "Email provider", "Транзакционные письма: подтверждение email, восстановление и приглашения")
 
 Rel(student, trajectory, "Бронирует уроки, участвует в занятиях, общается", "HTTPS / WSS")
 Rel(teacher, trajectory, "Управляет расписанием, ведёт уроки, отчитывается", "HTTPS / WSS")
+Rel(representative, trajectory, "Бронирует и оплачивает занятия подопечного", "HTTPS")
 Rel(admin, trajectory, "Обрабатывает тикеты поддержки, администрирует", "HTTPS")
 
 Rel(student, livekit, "Видео/аудио во время урока", "WebRTC")
@@ -20,6 +23,7 @@ Rel(teacher, livekit, "Видео/аудио во время урока", "WebRT
 
 Rel(trajectory, livekit, "Минтит access-токены, закрывает комнаты", "Server SDK / HTTPS")
 Rel(livekit, trajectory, "Вебхуки: participant_joined, room_finished", "HTTPS")
+Rel(trajectory, email, "Отправляет транзакционные уведомления", "HTTPS")
 
 SHOW_LEGEND()
 @enduml

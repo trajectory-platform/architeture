@@ -15,7 +15,7 @@ In:
 - `Cache-Control: public, max-age=<AUTH_JWKS_MAX_AGE>` (default 300s) + `ETag` (hash of key set) with `If-None-Match` → 304.
 - Method guard (GET/HEAD only), no auth required (public keys).
 
-Out: consumer-side caching (Gateway/Realtime plans), key lifecycle (T08).
+Out: consumer-side caching (Gateway/Realtime/Notification plans), key lifecycle (T08).
 
 ## Acceptance criteria
 

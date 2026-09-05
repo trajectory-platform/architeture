@@ -11,10 +11,11 @@
 
 ```
 auth_db      — identities, credentials, refresh_tokens, password_reset_requests, signing keys, outbox
-education_db — slots, bookings, lessons, chats, messages, reports, tickets, outbox
+education_db — profiles, slots, bookings, booking_participants, lessons, attendance, recordings, chats, tickets, outbox
+learning_db  — courses, groups, enrollments, homework, tests, materials, progress, processed_events, outbox
 billing_db   — ledger_entries, holds, idempotency_keys, outbox
 realtime_db  — board_updates, board_snapshots (только лог доски)
-notification_db — notification_preferences, notifications, deliveries, processed_events
+notification_db — notification_preferences, templates, notifications, deliveries, processed_events
 ```
 
 ## Ключевые таблицы
@@ -27,13 +28,23 @@ notification_db — notification_preferences, notifications, deliveries, process
 CREATE TABLE bookings (
     id              uuid PRIMARY KEY,
     teacher_id      uuid        NOT NULL,
-    student_id      uuid        NOT NULL,
     time_range      tstzrange   NOT NULL,
     status          text        NOT NULL,  -- PENDING | CONFIRMED | CANCELLED | FAILED
     recurring_rule  uuid,                   -- NULL для разовых
     idempotency_key text        UNIQUE,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE booking_participants (
+    booking_id       uuid        NOT NULL REFERENCES bookings(id),
+    student_id       uuid        NOT NULL,
+    status           text        NOT NULL,  -- PENDING | CONFIRMED | CANCELLED | NO_SHOW
+    price_amount     bigint      NOT NULL CHECK (price_amount > 0),
+    currency         char(3)     NOT NULL,
+    hold_reference_id uuid       UNIQUE NOT NULL,
+    PRIMARY KEY (booking_id, student_id)
+);
+-- Для группы цена и hold фиксируются отдельно с каждого ученика.
 
 -- двойная бронь невозможна на уровне БД, при любых гонках
 ALTER TABLE bookings ADD CONSTRAINT no_double_booking
@@ -60,7 +71,7 @@ CREATE TABLE holds (
     id              uuid        PRIMARY KEY,
     account_id      uuid        NOT NULL,
     amount          bigint      NOT NULL CHECK (amount > 0),
-    reference_id    uuid        NOT NULL,   -- booking_id
+    reference_id    uuid        NOT NULL,   -- booking_participant_id
     status          text        NOT NULL,   -- ACTIVE | CAPTURED | RELEASED
     idempotency_key text        UNIQUE NOT NULL,
     created_at      timestamptz NOT NULL DEFAULT now()
@@ -70,13 +81,14 @@ CREATE TABLE holds (
 
 Capture холда = одна транзакция: `holds.status → CAPTURED` + пара строк леджера (debit студента / credit получателя) + outbox `payment.captured`. История денег полная и неизменяемая — любой баланс воспроизводим на любой момент времени.
 
-### outbox (в education_db и billing_db)
+### outbox (в БД сервисов-издателей)
 
 ```sql
 CREATE TABLE outbox (
     id           bigserial   PRIMARY KEY,
     aggregate_id uuid        NOT NULL,
-    subject      text        NOT NULL,
+    topic        text        NOT NULL,
+    event_type   text        NOT NULL,
     payload      bytea       NOT NULL,      -- protobuf события
     created_at   timestamptz NOT NULL DEFAULT now(),
     published_at timestamptz
@@ -109,6 +121,8 @@ CREATE TABLE board_snapshots (
 
 Крупные снапшоты и архив старых апдейтов можно выносить в MinIO (в таблице остаётся ссылка) — Postgres хранит горячий хвост.
 
+Каждый `lesson_id` создаёт независимую доску. Новый урок начинает новый board log; состояние прошлого урока доступно только как отдельный material snapshot.
+
 ### education_db: чаты
 
 ```sql
@@ -139,6 +153,72 @@ CREATE TABLE messages (
 
 Один механизм для всех видов чатов; тикеты поддержки — `chats.kind = 'support'` + отдельная таблица `support_tickets (chat_id, status, assignee_id)` со статусами open / pending / resolved / closed. Поиск по сообщениям — Postgres full-text (`tsvector`-индекс по `body`) — на MVP достаточно.
 
+### education_db: записи уроков
+
+```sql
+CREATE TABLE lesson_recordings (
+    id          uuid        PRIMARY KEY,
+    lesson_id   uuid        NOT NULL,
+    object_key  text        NOT NULL UNIQUE,
+    status      text        NOT NULL,  -- RECORDING | READY | DELETED | FAILED
+    ready_at    timestamptz,
+    delete_after timestamptz,
+    deleted_at  timestamptz,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+-- При READY: delete_after = ready_at + interval '1 month'.
+```
+
+Согласия участников хранятся отдельно от recording metadata. Получение presigned URL требует проверки membership. После `delete_after` Core прекращает выдачу URL и удаляет S3 object фоновой задачей.
+
+### learning_db: учебный контур
+
+```sql
+CREATE TABLE courses (
+    id          uuid PRIMARY KEY,
+    owner_id    uuid NOT NULL,
+    title       text NOT NULL,
+    status      text NOT NULL,  -- DRAFT | PUBLISHED | ARCHIVED
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE groups (
+    id          uuid PRIMARY KEY,
+    course_id   uuid NOT NULL REFERENCES courses(id),
+    teacher_id  uuid NOT NULL,
+    capacity    smallint NOT NULL CHECK (capacity BETWEEN 1 AND 7)
+);
+
+CREATE TABLE enrollments (
+    id          uuid PRIMARY KEY,
+    course_id   uuid NOT NULL REFERENCES courses(id),
+    group_id    uuid REFERENCES groups(id),
+    student_id  uuid NOT NULL,
+    status      text NOT NULL,  -- PENDING | ACTIVE | SUSPENDED | EXPIRED | REVOKED
+    starts_at   timestamptz NOT NULL,
+    ends_at     timestamptz,
+    UNIQUE (course_id, student_id)
+);
+
+CREATE TABLE materials (
+    id          uuid PRIMARY KEY,
+    course_id   uuid REFERENCES courses(id),
+    lesson_id   uuid,
+    kind        text NOT NULL,  -- FILE | BOARD_SNAPSHOT | RECORDING
+    object_key  text NOT NULL,
+    expires_at  timestamptz,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE processed_events (
+    event_id     uuid PRIMARY KEY,
+    event_type   text NOT NULL,
+    processed_at timestamptz NOT NULL DEFAULT now()
+);
+```
+
+Полная ER-модель: [learning-db.puml](../diagrams/db/learning-db.puml). Homework, tests и progress имеют свои таблицы; связи не пересекают границу `learning_db` foreign keys.
+
 ### notification_db: inbox и доставки
 
 ```sql
@@ -148,6 +228,17 @@ CREATE TABLE notification_preferences (
     push       boolean NOT NULL DEFAULT true,
     in_app     boolean NOT NULL DEFAULT true,
     updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE templates (
+    id         uuid PRIMARY KEY,
+    kind       text NOT NULL,
+    channel    text NOT NULL,  -- in_app | email | push
+    version    integer NOT NULL,
+    subject    text,
+    body       text NOT NULL,
+    active     boolean NOT NULL DEFAULT true,
+    UNIQUE (kind, channel, version)
 );
 
 CREATE TABLE notifications (
@@ -170,12 +261,19 @@ CREATE TABLE deliveries (
     attempts        integer NOT NULL DEFAULT 0,
     next_attempt_at timestamptz,
     provider_ref    text,
+    last_error_code text,
     updated_at      timestamptz NOT NULL DEFAULT now(),
     UNIQUE (notification_id, channel)
 );
+
+CREATE TABLE processed_events (
+    event_id     uuid PRIMARY KEY,
+    event_type   text NOT NULL,
+    processed_at timestamptz NOT NULL DEFAULT now()
+);
 ```
 
-Сервис не принимает пользовательские уведомления как бизнес-команды: он материализует факты из JetStream. Уникальные ключи делают обработку событий и ретраи доставки идемпотентными.
+Сервис не принимает пользовательские уведомления как бизнес-команды: он материализует факты из Kafka. Уникальные ключи делают обработку событий и ретраи доставки идемпотентными.
 
 ## Redis
 

@@ -6,6 +6,8 @@
 
 `internal/infra/token` implementing the `service.TokenIssuer` interface: access JWT signing with the current ACTIVE key, and refresh-token raw/hash generation. Spec: [auth.md — Login](../../../services/auth.md), [07 — Security](../../../architecture/07-security.md).
 
+> This task records the delivered single-role token baseline. T22 evolves claims to `identity_type`, `roles`, `permissions` and `session_id` per ADR-007.
+
 ## Scope
 
 In:
@@ -17,7 +19,7 @@ In:
 - `NewRefreshToken() (raw string, hash []byte, err error)`:
   - Raw: 32 bytes `crypto/rand`, base64url — opaque string, **not** a JWT (nothing to parse client-side; spec stores only hash).
   - Hash: `sha256(raw)` — the only thing persisted ([auth.md invariant](../../../services/auth.md): DB dump leaks no usable refresh tokens).
-- Verification helper `ParseAccess` for tests only (verify against a given public JWK) — production verification belongs to Gateway/Realtime, not Auth.
+- Verification helper `ParseAccess` for tests only (verify against a given public JWK) — production verification belongs to Gateway/Realtime/Notification, not Auth.
 
 Out: refresh token persistence/rotation logic (T13), JWKS (T10).
 

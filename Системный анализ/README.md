@@ -1,6 +1,6 @@
 # Trajectory — архитектурная документация
 
-**Trajectory** — платформа индивидуальных онлайн-занятий с интерактивной доской (CRDT-синхронизация), видеосвязью с низкой задержкой (WebRTC / LiveKit), расписанием, биллингом, чатами и отчётностью.
+**Trajectory** — платформа индивидуальных и групповых онлайн-занятий с интерактивной доской (CRDT-синхронизация), видеосвязью с низкой задержкой (WebRTC / LiveKit), расписанием, учебным контуром, биллингом, уведомлениями, чатами и отчётностью.
 
 Этот каталог содержит высокоуровневую документацию бэкенд-архитектуры: текстовые документы, архитектурные решения (ADR) и диаграммы (C4, sequence, use case) в формате PlantUML.
 
@@ -11,8 +11,8 @@
 | Документ | Содержание |
 |---|---|
 | [01 — Обзор системы](architecture/01-overview.md) | Цели, ключевые инженерные вызовы, стек, архитектурные принципы |
-| [02 — Сервисы и владение данными](architecture/02-services.md) | 6 сервисов: зоны ответственности, владение данными, границы |
-| [03 — Межсервисное взаимодействие](architecture/03-communication.md) | gRPC (sync) vs NATS JetStream (async), outbox, идемпотентность, трассировка |
+| [02 — Сервисы и владение данными](architecture/02-services.md) | 7 сервисов: зоны ответственности, владение данными, границы |
+| [03 — Межсервисное взаимодействие](architecture/03-communication.md) | gRPC (sync) vs Apache Kafka (async), outbox, идемпотентность, трассировка |
 | [04 — Саги и консистентность](architecture/04-sagas-and-consistency.md) | Booking-сага, отмена/завершение урока, recurring-бронирования, журнал прогресса |
 | [05 — Realtime и вайтборд](architecture/05-realtime-whiteboard.md) | CRDT-синхронизация (Yjs relay на Go), протокол reconnect, LiveKit join flow |
 | [06 — Данные и хранилища](architecture/06-data-storage.md) | Postgres per-service, ключевые таблицы (ledger, outbox, bookings), Redis, MinIO |
@@ -28,6 +28,7 @@
 | [API Gateway](services/api-gateway.md) | REST-граница: JWT/JWKS, rate limiting, REST → gRPC, OpenAPI; stateless, без БД |
 | [Auth Service](services/auth.md) | Идентичность: регистрация, login, ротация refresh-токенов, ключи и JWKS |
 | [Core Education Service](services/core-education.md) | Предметное ядро: расписание, booking-сага, уроки, чаты, поддержка, отчёты, профили |
+| [Learning Service](services/learning.md) | Учебный контур: курсы, группы, зачисления, задания, тесты, материалы и прогресс |
 | [Billing Service](services/billing.md) | Деньги: append-only ledger, холды, идемпотентность |
 | [Realtime Service](services/realtime.md) | WebSocket-хаб: Yjs-relay, чат комнат, presence; почти stateless |
 | [Notification Service](services/notification.md) | Настройки, inbox и асинхронная доставка in-app/email/push |
@@ -36,12 +37,13 @@
 
 | ADR | Решение |
 |---|---|
-| [ADR-001](adr/ADR-001-microservices-granularity.md) | Гранулярность: 6 сервисов; чаты и отчёты — внутри Core, нотификации — отдельный сервис |
+| [ADR-001](adr/ADR-001-microservices-granularity.md) | Гранулярность: 7 сервисов; Learning и Notification выделены отдельно |
 | [ADR-005](adr/ADR-005-architecture-business-rules.md) | Границы публичного API и контрактные инварианты |
 | [ADR-002](adr/ADR-002-crdt-sync-path-a.md) | CRDT-синхронизация: Go relay с персистентностью (vs Hocuspocus) |
-| [ADR-003](adr/ADR-003-nats-jetstream.md) | Шина событий: NATS JetStream + transactional outbox (vs Redis Pub/Sub) |
+| [ADR-003](adr/ADR-003-apache-kafka.md) | Шина событий: Apache Kafka + transactional outbox |
 | [ADR-004](adr/ADR-004-grpc-internal-rest-edge.md) | gRPC внутри, REST на границе; контракты в `proto/` под buf |
 | [ADR-006](adr/ADR-006-auth-api-evolution-and-password-reset.md) | Эволюция Auth API, `event_id` и владение восстановлением пароля |
+| [ADR-007](adr/ADR-007-auth-identity-access-evolution.md) | Эволюция identity, множественных ролей, permissions и сессий Auth Service |
 
 ### Диаграммы
 
@@ -53,6 +55,8 @@
 - [C3 — Компоненты Auth Service](diagrams/c4/c3-auth.puml)
 - [C3 — Компоненты Billing Service](diagrams/c4/c3-billing.puml)
 - [C3 — Компоненты Core Education Service](diagrams/c4/c3-core-education.puml)
+- [C3 — Компоненты Learning Service](diagrams/c4/c3-learning.puml)
+- [C3 — Компоненты Notification Service](diagrams/c4/c3-notification.puml)
 - [C3 — Компоненты Realtime Service](diagrams/c4/c3-realtime.puml)
 
 **ER (базы данных):**
@@ -60,7 +64,14 @@
 - [auth_db](diagrams/db/auth-db.puml)
 - [billing_db](diagrams/db/billing-db.puml)
 - [education_db](diagrams/db/education-db.puml)
+- [learning_db](diagrams/db/learning-db.puml)
+- [notification_db](diagrams/db/notification-db.puml)
 - [realtime_db](diagrams/db/realtime-db.puml)
+
+**Модульные монолиты:**
+
+- [Core Education — модули и разрешённые зависимости](diagrams/components/core-education-modules.puml)
+- [Learning — модули и разрешённые зависимости](diagrams/components/learning-modules.puml)
 
 **Sequence:**
 

@@ -6,6 +6,8 @@
 
 `internal/service/register.go`: create identity + credentials + outbox event in **one transaction**, then issue the first token pair (no separate login needed). Flow: [auth-registration.puml](../../../diagrams/sequence/auth-registration.puml), spec: [auth.md — Регистрация](../../../services/auth.md).
 
+> This task records the delivered ACTIVE-account baseline. T23 evolves registration to `PENDING_EMAIL`, adds `representative`, confirmation tokens and Notification delivery while preserving existing migrations.
+
 ## Scope
 
 In:

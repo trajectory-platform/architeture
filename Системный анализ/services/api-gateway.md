@@ -2,7 +2,7 @@
 
 Единственная REST-точка входа для SPA: терминирует REST, транслирует в gRPC внутренних сервисов. Полностью **stateless** — ни базы, ни сессий; всё состояние — кэши и счётчики в Redis. Масштабируется репликами за Nginx без координации.
 
-Жёсткое правило: **никакой бизнес-логики**. Если в обработчике появляется `if` про предметную область — он переезжает в Core ([02 — Сервисы](../architecture/02-services.md)). Gateway знает про HTTP, токены, ключи идемпотентности и коды ошибок — не про уроки и деньги.
+Жёсткое правило: **никакой бизнес-логики**. Если в обработчике появляется `if` про предметную область — он переезжает в сервис-владелец ([02 — Сервисы](../architecture/02-services.md)). Gateway знает про HTTP, токены, ключи идемпотентности и коды ошибок — не про уроки, обучение или деньги.
 
 Диаграммы: [C3 — компоненты](../diagrams/c4/c3-api-gateway.puml) · Gateway виден во всех sequence-диаграммах: [booking-saga](../diagrams/sequence/booking-saga.puml), [lesson-join](../diagrams/sequence/lesson-join.puml), [auth-registration](../diagrams/sequence/auth-registration.puml), [auth-refresh-rotation](../diagrams/sequence/auth-refresh-rotation.puml). ER-диаграммы нет — у Gateway нет базы данных.
 
@@ -15,14 +15,15 @@
 | Cookie ⇄ gRPC: refresh-токен из httpOnly cookie в поле запроса Auth и обратно | Хранение сессий — их нет; состояние сессии в refresh-цепочке Auth |
 | Прокидка `Idempotency-Key`: заголовок → gRPC metadata | Проверка идемпотентности — Core (bookings) и Billing (holds, idempotency_keys) |
 | Rate limiting (Redis), CORS, единый формат ошибок | Терминация TLS — Nginx |
-| Публикация OpenAPI-спеки | WebSocket — Realtime (Nginx маршрутизирует `/ws/*` мимо Gateway) |
+| Публикация OpenAPI-спеки | WebSocket — Realtime и Notification (Nginx маршрутизирует `/ws/rooms/*` и `/ws/notifications` мимо Gateway) |
 
 ## Маршрутизация REST → gRPC
 
 | Префикс REST | Сервис | gRPC |
 |---|---|---|
 | `/auth/*` (register, login, refresh, logout) | Auth | `auth.v1` |
-| `/teachers/*`, `/slots/*`, `/bookings/*`, `/lessons/*`, `/chats/*`, `/tickets/*`, `/reports/*`, `/profiles/*`, `/uploads` | Core | `education.v1` |
+| `/teachers/*`, `/slots/*`, `/bookings/*`, `/lessons/*`, `/chats/*`, `/tickets/*`, `/profiles/*`, `/recordings/*` | Core | `education.v1` |
+| `/courses/*`, `/groups/*`, `/enrollments/*`, `/homework/*`, `/tests/*`, `/materials/*`, `/progress/*` | Learning | `learning.v1` |
 | `/balance`, `/topup` | Billing | `billing.v1` |
 | `/notifications/*` | Notification | `notification.v1`: inbox, отметки прочтения, настройки |
 
@@ -81,7 +82,7 @@ Gateway публикует OpenAPI-спеку; из неё генерирует�
 
 ## Наблюдаемость
 
-- **`trace_id` рождается здесь** — HTTP-мидлвара OTel; контекст уезжает в gRPC metadata и доезжает до SQL и JetStream ([08 — Деплой](../architecture/08-deployment-observability.md)).
+- **`trace_id` рождается здесь** — HTTP-мидлвара OTel; контекст уезжает в gRPC metadata и доезжает до SQL и Kafka ([08 — Деплой](../architecture/08-deployment-observability.md)).
 - `/metrics` — RED по REST-маршрутам и по исходящим gRPC-методам (p50/p95/p99), счётчики rate-limit отказов, JWKS-промахи.
 - Структурированные логи: `trace_id`, маршрут, `user_id`, статус; тела запросов и PII не логируются.
 
