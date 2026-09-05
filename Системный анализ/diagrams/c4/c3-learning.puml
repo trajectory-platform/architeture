@@ -1,0 +1,53 @@
+@startuml c3-learning
+!include <C4/C4_Component>
+
+title Trajectory — C3: Learning Service (components)
+
+Container(gateway, "API Gateway", "Go", "REST -> gRPC")
+Container(core, "Core Education Service", "Go", "Уроки, attendance, записи")
+Container(notification, "Notification Service", "Go", "Inbox и доставка")
+ContainerDb(pg_learning, "learning_db", "PostgreSQL")
+ContainerDb(minio, "MinIO", "S3")
+ContainerQueue(kafka, "Apache Kafka", "KRaft")
+
+Container_Boundary(learning, "Learning Service") {
+    Component(grpc_api, "gRPC API (learning.v1)", "Go, grpc-go", "Courses, groups, enrollments, homework, tests, materials, progress")
+    Component(courses, "courses", "Go package", "Программы, темы, версии, публикация")
+    Component(groups, "groups", "Go package", "Группы до 7 учеников")
+    Component(enrollments, "enrollments", "Go package", "Доступ, сроки, expiry jobs")
+    Component(homework, "homework", "Go package", "Выдача, сдача, review")
+    Component(tests, "tests", "Go package", "Банк вопросов, attempts, scores")
+    Component(materials, "materials", "Go package", "Metadata S3 объектов, recordings и board snapshots")
+    Component(progress, "progress", "Go package", "Attendance projection, освоение тем, achievements")
+    Component(consumers, "Event Consumers", "Go goroutines", "lesson.*, payment.captured; dedup event_id")
+    Component(outbox_relay, "Outbox Relay", "Go goroutine", "Publish learning events после commit")
+}
+
+Rel(gateway, grpc_api, "Учебные операции", "gRPC")
+Rel(grpc_api, courses, "вызывает")
+Rel(grpc_api, groups, "вызывает")
+Rel(grpc_api, enrollments, "вызывает")
+Rel(grpc_api, homework, "вызывает")
+Rel(grpc_api, tests, "вызывает")
+Rel(grpc_api, materials, "вызывает")
+Rel(grpc_api, progress, "вызывает")
+
+Rel(courses, pg_learning, "R/W", "SQL")
+Rel(groups, pg_learning, "R/W", "SQL")
+Rel(enrollments, pg_learning, "R/W + outbox", "SQL")
+Rel(homework, pg_learning, "R/W + outbox", "SQL")
+Rel(tests, pg_learning, "R/W + outbox", "SQL")
+Rel(materials, pg_learning, "R/W", "SQL")
+Rel(progress, pg_learning, "R/W + outbox", "SQL")
+Rel(materials, minio, "Presigned URL", "S3 API")
+
+Rel(kafka, consumers, "lesson.*, payment.captured", "Kafka protocol")
+Rel(consumers, progress, "Обновить progress")
+Rel(consumers, materials, "Добавить recording/snapshot")
+Rel(outbox_relay, pg_learning, "Читает outbox", "SQL")
+Rel(outbox_relay, kafka, "homework.*, enrollment.*, progress.*", "Kafka protocol")
+Rel(kafka, notification, "learning events", "Kafka protocol")
+Rel(core, kafka, "education events", "Kafka protocol")
+
+SHOW_LEGEND()
+@enduml

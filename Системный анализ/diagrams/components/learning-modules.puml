@@ -1,0 +1,85 @@
+@startuml learning-modules
+title Trajectory — Learning: модули и разрешённые зависимости
+
+left to right direction
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam shadowing false
+
+package "Driving adapters" {
+  component "learning.v1\ngRPC transport" as grpc
+  component "Kafka consumers" as consumers
+  component "Background jobs" as jobs
+}
+
+package "Learning modular monolith" {
+  component "courses\n<<module>>\nкурсы, программы, темы" as courses
+  component "groups\n<<module>>\nгруппы, состав" as groups
+  component "enrollments\n<<module>>\nдоступ и сроки" as enrollments
+  component "homework\n<<module>>\nзадания, сдача, review" as homework
+  component "tests\n<<module>>\nбанк, попытки, scores" as tests
+  component "materials\n<<module>>\nmetadata и связи" as materials
+  component "progress\n<<module>>\nпроекции, achievements" as progress
+
+  component "event writer\n<<shared port>>" as event_writer
+  component "outbox relay\n<<infrastructure>>" as relay
+}
+
+database "learning_db\nтаблицы разделены\nпо module ownership" as db
+queue "Apache Kafka" as kafka
+cloud "S3 / MinIO" as s3
+
+grpc --> courses
+grpc --> groups
+grpc --> enrollments
+grpc --> homework
+grpc --> tests
+grpc --> materials
+grpc --> progress
+
+consumers --> progress : lesson.completed
+consumers --> materials : lesson.recorded\nboard snapshot
+consumers --> enrollments : payment.captured
+jobs --> enrollments : expiry processing
+
+groups --> courses : public application port\ncourse rules
+enrollments --> courses : public application port\ncourse availability
+enrollments --> groups : public application port\ngroup capacity
+homework --> courses : public application port\ntopic/version reference
+homework --> enrollments : public application port\nrecipient access
+tests --> courses : public application port\ntopic/version reference
+tests --> enrollments : public application port\nattempt access
+materials --> courses : public application port\ncourse/topic reference
+materials --> enrollments : public application port\nread access
+progress --> courses : public application port\nprogram structure
+progress --> enrollments : public application port\nactive access
+
+materials --> s3 : S3 API
+
+courses --> db : owns course tables
+groups --> db : owns group tables
+enrollments --> db : owns enrollment tables
+homework --> db : owns homework tables
+tests --> db : owns test tables
+materials --> db : owns material tables
+progress --> db : owns progress tables
+
+courses --> event_writer
+groups --> event_writer
+enrollments --> event_writer
+homework --> event_writer
+tests --> event_writer
+materials --> event_writer
+progress --> event_writer
+event_writer --> db : same transaction
+relay --> db : read outbox
+relay --> kafka : publish
+
+note bottom of event_writer
+  Стрелка между модулями означает вызов
+  публичного application port.
+  Импорт internal-пакетов другого модуля
+  и cross-module SQL запрещены.
+end note
+
+@enduml

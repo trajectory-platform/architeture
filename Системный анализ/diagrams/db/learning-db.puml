@@ -1,0 +1,150 @@
+@startuml learning-db
+title Trajectory — ER: learning_db (Learning Service)
+
+hide circle
+skinparam linetype ortho
+
+entity "courses" as courses {
+  * id : uuid <<PK>>
+  --
+  * owner_id : uuid
+  * title : text
+  * status : text
+  * created_at : timestamptz
+}
+
+entity "course_topics" as topics {
+  * id : uuid <<PK>>
+  --
+  * course_id : uuid <<FK>>
+  * position : integer
+  * title : text
+}
+
+entity "groups" as groups {
+  * id : uuid <<PK>>
+  --
+  * course_id : uuid <<FK>>
+  * teacher_id : uuid
+  * capacity : smallint  -- 1..7
+}
+
+entity "enrollments" as enrollments {
+  * id : uuid <<PK>>
+  --
+  * course_id : uuid <<FK>>
+  group_id : uuid <<FK>>
+  * student_id : uuid
+  * status : text
+  * starts_at : timestamptz
+  ends_at : timestamptz
+}
+
+entity "homework" as homework {
+  * id : uuid <<PK>>
+  --
+  * course_id : uuid <<FK>>
+  topic_id : uuid <<FK>>
+  * author_id : uuid
+  * title : text
+}
+
+entity "homework_assignments" as assignments {
+  * id : uuid <<PK>>
+  --
+  * homework_id : uuid <<FK>>
+  * student_id : uuid
+  due_at : timestamptz
+  * status : text
+}
+
+entity "homework_submissions" as submissions {
+  * id : uuid <<PK>>
+  --
+  * assignment_id : uuid <<FK>>
+  * attempt_no : integer
+  * status : text
+  score : integer
+  submitted_at : timestamptz
+}
+
+entity "tests" as tests {
+  * id : uuid <<PK>>
+  --
+  * course_id : uuid <<FK>>
+  * version : integer
+  * title : text
+}
+
+entity "test_attempts" as attempts {
+  * id : uuid <<PK>>
+  --
+  * test_id : uuid <<FK>>
+  * test_version : integer
+  * student_id : uuid
+  * status : text
+  score : integer
+}
+
+entity "materials" as materials {
+  * id : uuid <<PK>>
+  --
+  course_id : uuid <<FK>>
+  topic_id : uuid <<FK>>
+  lesson_id : uuid
+  * kind : text
+  * object_key : text
+  expires_at : timestamptz
+}
+
+entity "progress" as progress {
+  * student_id : uuid <<PK>>
+  * course_id : uuid <<PK, FK>>
+  --
+  completed_lessons : integer
+  completed_topics : integer
+  updated_at : timestamptz
+}
+
+entity "processed_events" as processed {
+  * event_id : uuid <<PK>>
+  --
+  * event_type : text
+  * processed_at : timestamptz
+}
+
+entity "outbox" as outbox {
+  * id : bigserial <<PK>>
+  --
+  * aggregate_id : uuid
+  * topic : text
+  * event_type : text
+  * payload : bytea
+  * created_at : timestamptz
+  published_at : timestamptz
+}
+
+courses ||--|{ topics
+courses ||--o{ groups
+courses ||--o{ enrollments
+groups |o--o{ enrollments
+courses ||--o{ homework
+topics |o--o{ homework
+homework ||--o{ assignments
+assignments ||--o{ submissions
+courses ||--o{ tests
+tests ||--o{ attempts
+courses |o--o{ materials
+topics |o--o{ materials
+courses ||--o{ progress
+
+note bottom of groups
+  CHECK capacity BETWEEN 1 AND 7;
+  число ACTIVE enrollment не выше capacity
+end note
+
+note bottom of materials
+  RECORDING expires_at через 1 месяц;
+  bytes находятся в S3
+end note
+@enduml

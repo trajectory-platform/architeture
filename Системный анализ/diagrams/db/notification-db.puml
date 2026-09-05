@@ -1,0 +1,86 @@
+@startuml notification-db
+title Trajectory — ER: notification_db (Notification Service)
+
+hide circle
+skinparam linetype ortho
+
+entity "notification_preferences" as preferences {
+  * user_id : uuid <<PK>>
+  --
+  * in_app : boolean
+  * email : boolean
+  * push : boolean
+  * updated_at : timestamptz
+}
+
+entity "templates" as templates {
+  * id : uuid <<PK>>
+  --
+  * kind : text
+  * channel : text
+  * version : integer
+  subject : text
+  * body : text
+  * active : boolean
+}
+
+entity "notifications" as notifications {
+  * id : uuid <<PK>>
+  --
+  * user_id : uuid
+  * kind : text
+  * title : text
+  * payload : jsonb
+  * event_id : uuid
+  * created_at : timestamptz
+  read_at : timestamptz
+}
+
+entity "deliveries" as deliveries {
+  * id : uuid <<PK>>
+  --
+  * notification_id : uuid <<FK>>
+  * channel : text
+  * status : text
+  * attempts : integer
+  next_attempt_at : timestamptz
+  provider_ref : text
+  last_error_code : text
+  * updated_at : timestamptz
+}
+
+entity "processed_events" as processed {
+  * event_id : uuid <<PK>>
+  --
+  * event_type : text
+  * processed_at : timestamptz
+}
+
+entity "outbox" as outbox {
+  * id : bigserial <<PK>>
+  --
+  * aggregate_id : uuid
+  * topic : text
+  * event_type : text
+  * payload : bytea
+  * created_at : timestamptz
+  published_at : timestamptz
+}
+
+notifications ||--o{ deliveries
+
+note bottom of notifications
+  UNIQUE (event_id, user_id, kind);
+  profile и secrets не копируются
+end note
+
+note bottom of deliveries
+  UNIQUE (notification_id, channel);
+  worker claim через SKIP LOCKED
+end note
+
+note bottom of processed
+  Kafka offset фиксируется только
+  после commit этой транзакции
+end note
+@enduml
