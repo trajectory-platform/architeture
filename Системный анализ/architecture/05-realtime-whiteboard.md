@@ -29,8 +29,8 @@
 
 Диаграмма: [whiteboard-sync.puml](../diagrams/sequence/whiteboard-sync.puml).
 
-1. Клиент A рисует штрих → Yjs кодирует инкрементальный апдейт (десятки байт) → `board.update` в WebSocket.
-2. Realtime-инстанс: **append** в лог комнаты (`board_updates`, см. [06](06-data-storage.md)) → **publish** в Redis-канал комнаты.
+1. Клиент A рисует штрих → Yjs кодирует инкрементальный апдейт (размер ограничивается квотой) → `board.update` в WebSocket.
+2. Realtime-инстанс: в одной транзакции увеличивает постоянный `board_rooms.last_seq` и делает append в `board_updates`; после commit выдаёт отправителю `board.ack(update_id, seq)` и выполняет publish в Redis. Неподтверждённая правка остаётся pending на клиенте.
 3. Все инстансы realtime, держащие участников этой комнаты, получают апдейт из Redis и **broadcast** в свои WebSocket-соединения (кроме отправителя).
 4. Клиент B применяет апдейт к своему Y.Doc — состояние сходится.
 
@@ -50,10 +50,10 @@
 
 Лог апдейтов растёт с каждым штрихом; replay тысяч апдейтов при входе — медленно. Снапшот = слитое состояние документа (`Y.encodeStateAsUpdate`). Две стратегии:
 
-1. **Node-сайдкар** (основная): маленький воркер на Node/TS периодически (или по порогу: N апдейтов / M байт с последнего снапшота) читает snapshot + tail, выполняет `Y.mergeUpdates`, пишет новый снапшот. Апдейты до снапшота можно удалять (или архивировать в MinIO для history/replay).
-2. **Снапшот с клиента** (упрощённая, без сайдкара): клиент преподавателя периодически шлёт `Y.encodeStateAsUpdate` своего документа как снапшот. Дешевле инфраструктурно; минус — зависимость от присутствия и честности клиента, поэтому подходит как временная мера MVP.
+1. **Node-сайдкар**: читает согласованный snapshot + tail до H, применяет к Y.Doc и кодирует полный update. Y.mergeUpdates допустим для слияния, но не выполняет GC удалённого содержимого. Под row lock board_rooms проверяет исходное поколение, атомарно публикует новый snapshot/snapshot_seq и удаляет только покрытые updates до H. Конкурирующие append выше H сохраняются; last_seq не уменьшается.
+2. **Полный лог без pruning** допустим в MVP 1.0 при проверенных лимитах. Клиентский snapshot — недоверенная подсказка и не разрешает удалять серверный лог.
 
-Снапшот — оптимизация чтения. Корректность от него не зависит: потеря снапшота лечится replay'ем полного лога. После завершения урока финальный snapshot публикуется как материал урока; следующий урок начинает отдельный пустой Y.Doc.
+После pruning snapshot и tail — обязательное восстановимое состояние. Replay без snapshot возможен только при наличии проверенного полного архива удалённых updates; backup охватывает оба компонента. После завершения урока финальный snapshot публикуется как материал урока; следующий урок начинает отдельный пустой Y.Doc.
 
 ## Presence и масштабирование realtime
 
@@ -66,9 +66,21 @@
 Видео/аудио/screen share не касаются нашего бэкенда — клиент соединяется с LiveKit (SFU) напрямую по WebRTC. Интеграция в трёх точках (диаграмма: [lesson-join.puml](../diagrams/sequence/lesson-join.puml)):
 
 1. **Вход**: `POST /lessons/{id}/join` → Core проверяет членство и временное окно → минтит **LiveKit access token** (server SDK, права publish/subscribe на комнату) и **room JWT** для WebSocket → клиент устанавливает оба соединения.
-2. **Вебхуки**: `participant_joined`, `participant_left`, `room_finished` → HTTP-эндпоинт Core (подпись вебхука проверяется) → посещаемость, фактический таймер урока, триггер `lesson.completed`.
-3. **Завершение**: «End lesson» от преподавателя → Core закрывает комнату через LiveKit API → `room_finished` → штатная цепочка завершения ([04](04-sagas-and-consistency.md)).
+2. **Вебхуки**: `participant_joined`, `participant_left`, `room_finished` → HTTP-эндпоинт Core (подпись вебхука проверяется) → идемпотентный webhook inbox, наблюдения посещаемости и reconciliation; сам webhook не означает денежный исход.
+3. **Завершение**: EndLesson, timer и webhook проходят один Core state machine с CAS; закрытие LiveKit не требует обязательно дождаться room_finished. Пропавшие webhooks и неоднозначная посещаемость обрабатываются reconciler-ом по [04](04-sagas-and-consistency.md).
 
 ## Чат комнаты
 
-`chat.message` рассылается участникам немедленно (latency-first), затем инстанс realtime асинхронно персистит его в Core по gRPC (`SaveMessage`) с client-generated `message_id` — ретраи не создают дублей. История чата комнаты после урока доступна через обычный REST (`GET /lessons/{id}/messages`) — данные у Core, как и все остальные чаты ([02 — Сервисы](02-services.md)).
+`chat.message` сначала авторизуется и сохраняется в Core через внутренний SaveMessage с client-generated message_id. Только после Core commit Realtime отправляет durable ack и broadcast. Клиент повторяет pending ID при потере ответа; то же ID с другим payload отклоняется. Публичный SendMessage и внутренний SaveMessage используют один application port. История чата комнаты после урока доступна через обычный REST (`GET /lessons/{id}/messages`) — данные у Core, как и все остальные чаты ([02 — Сервисы](02-services.md)).
+
+## Доставка и snapshot → live (обязательно с MVP 1.0)
+
+До чтения snapshot сервер подписывается на Redis, дожидается подтверждения и буферизует live updates. В REPEATABLE READ читает текущий snapshot_seq, last_seq=H и полный хвост до H. Отправляет snapshot+tail, затем буфер seq>H. Переполнение буфера вызывает новый sync. MVCC защищает согласованность чтения с pruning; при хранении snapshot в S3 нужен pin/grace period до удаления старого объекта.
+
+Envelope board.update содержит update_id/seq, ack отправляется только после commit. Клиент ведёт непрерывный seq; board.watermark heartbeat сверяет durable last_seq. Gap, Redis reconnect или более новый watermark запускают sync даже при открытом клиентском WS. Потеря последнего publish обнаруживается heartbeat. При недоступной БД новый update не подтверждается и не рассылается. Membership/размер/скорость проверяются до append; opaque bytes не означают отсутствие лимитов. После закрытия комнаты новые offline updates не принимаются.
+
+Receipt `(lesson_id, update_id, digest, seq)` переживает pruning bytes на согласованный период offline replay. Повтор получает прежний seq, другое содержимое отклоняется. Изменение счётчика, update и receipt — одна транзакция. Истечение replay window явно отклоняет старую правку вместо нового silent append.
+
+В 2.0 финальный снимок как материал имеет явный формат: Yjs update требует viewer, PNG/PDF требует render/export. Новый урок начинает пустой документ. История чата догружается по cursor/watermark после пропущенного broadcast; только MarkRead меняет read state.
+
+Основания: [Yjs updates и GC](https://docs.yjs.dev/api/document-updates), [Redis at-most-once](https://redis.io/docs/latest/develop/pubsub/), [LiveKit webhook delivery](https://docs.livekit.io/intro/basics/rooms-participants-tracks/webhooks-events/). Проверки по срезам — [09](09-release-readiness.md), решение — [ADR-008](../adr/ADR-008-durable-delivery-and-recovery.md).

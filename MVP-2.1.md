@@ -3,6 +3,9 @@
 > Формат: дипломный проект  
 > Контрольная точка: июнь  
 > Статус документа: предлагаемая декомпозиция
+> Год и точная дата контрольной точки требуют подтверждения.
+> Сверка базы: `origin/master@a054171`, 2026-09-05; критерии и открытые решения — в [релизной готовности](Системный%20анализ/architecture/09-release-readiness.md).
+> Покрытие каждого требования — [матрица MVP](Матрица%20покрытия%20MVP.md); план не подтверждает реализацию.
 
 ## Назначение этапа
 
@@ -39,7 +42,7 @@ MVP 2.1 — кумулятивный релиз, включающий [MVP 1.0](
 | `M21-09` | Gamification | Streak, achievements и weekly goal только в кабинете ученика | 12.7–12.8 |
 | `M21-10` | Support completeness | Templates, response time, окончательные статусы, assignee workflow, attachments и audit | 15.1–15.8 |
 | `M21-11` | Billing и payouts | Реквизиты, payout balance, запрос выплаты, admin statuses, начисления/выплаты за период, табличный export и стабильная граница будущего PSP adapter | 16.18–16.24 |
-| `M21-12` | Полная admin panel | Все одиннадцать разделов, ownership-aware aggregation, search, filters, sort, pagination и audit для пользовательских/денежных mutations | 18.1–18.13 |
+| `M21-12` | Полная admin panel | Все одиннадцать разделов, ownership-aware aggregation, search, filters, sort, pagination и audit для пользовательских/денежных mutations | 2.2, 18.1–18.13 |
 | `M21-13` | Полные кабинеты | Закрыты все страницы и состояния кабинетов преподавателя и ученика, включая role switch, reports, payments, settings, documents и support | 19.1.1–19.1.11, 19.2.1–19.2.9 |
 | `M21-14` | UI foundation closure | Единая design system, высокая плотность teacher UI, упрощённый student UI, light/dark themes и адаптивные mobile layouts | 2.3–2.9 |
 | `M21-15` | Audit и privacy | Журналы действий ключевых сущностей, consent на ПДн/cookie/recording, retention/delete policies, redaction sensitive data | 2.10–2.11, 2.15–2.17, 4.8, 18.13 |
@@ -78,7 +81,9 @@ MVP 2.1 — кумулятивный релиз, включающий [MVP 1.0](
 ## Definition of Done
 
 - Все требования разделов 2–19 имеют статус `DONE` в traceability matrix.
-- Для каждого требования указаны implementation reference и test/acceptance evidence.
+- Для каждого требования указаны implementation reference и test/acceptance evidence в [матрице MVP](Матрица%20покрытия%20MVP.md). Значение PLANNED и ссылка только на задачу не являются evidence.
+- DEC-01–DEC-08 из релизного реестра закрыты либо явно неприменимы с основанием; согласованы год, владельцы и профиль итоговой приёмки.
+- Итоговые численные NFR проверены в согласованной среде; успешный demo двух участников не считается проверкой 100 комнат/800 участников.
 - Пройдены unit, integration, contract, migration, E2E и Compose/stage smoke suites.
 - Пройдены authorization/security negative tests, Kafka replay/DLQ tests и основные fault-injection проверки.
 - Пройдены reconnect и load/soak проверки Realtime; подтверждена комната до восьми участников.

@@ -34,7 +34,7 @@ gRPC-сервера у Realtime **нет** — никто не зовёт его
 
 | Вызов | Когда |
 |---|---|
-| Core `SaveMessage` (gRPC) | Асинхронный персист `chat.message` после немедленного broadcast; идемпотентен по client-generated `message_id` — ретраи без дублей |
+| Core `SaveMessage` (gRPC) | Membership и durable commit до ack/broadcast; идемпотентен по client-generated `message_id` и проверяет совпадение payload |
 | Core `AuthorizeRoomJoin` (gRPC) | Fallback-проверка членства; штатный путь — room JWT, без сетевого вызова |
 
 ### События
@@ -52,21 +52,21 @@ Realtime ничего не публикует в Kafka: его факты (prese
 | WS Hub | Upgrade, валидация room JWT (JWKS), envelope-роутинг по типам |
 | Room Registry | Membership/presence в Redis (TTL-ключи, heartbeat), подписка на каналы комнат |
 | Board Log | `append(seq, blob)` → персист → fan-out; `sync_request` → snapshot + tail |
-| Chat Forwarder | Немедленный broadcast, затем асинхронный `SaveMessage` в Core |
+| Chat Forwarder | Core SaveMessage с membership → durable commit → ack/broadcast |
 | Presence | Курсоры, инструменты, online; best-effort, потеря некритична |
-| Board Compactor | **Отдельный Node-сайдкар**: по порогу `Y.mergeUpdates(snapshot, tail)` → новый снапшот. Единственный не-Go компонент; изолирован — читает/пишет только realtime_db ([ADR-002](../adr/ADR-002-crdt-sync-path-a.md)) |
+| Board Compactor | **Отдельный Node-сайдкар**: согласованный snapshot+tail → Y.Doc/GC → проверенное поколение и атомарный pruning. Изолирован — читает/пишет только realtime_db ([ADR-002](../adr/ADR-002-crdt-sync-path-a.md)) |
 
 ## Данные: realtime_db
 
-ER-диаграмма: [realtime-db.puml](../diagrams/db/realtime-db.puml). DDL — в [06 — Данные](../architecture/06-data-storage.md): две таблицы, `board_updates (lesson_id, seq, update)` и `board_snapshots (lesson_id, upto_seq, snapshot)`. Каждый `lesson_id` обозначает новую независимую доску; состояние предыдущего урока не продолжается автоматически.
+ER-диаграмма: [realtime-db.puml](../diagrams/db/realtime-db.puml). DDL — в [06 — Данные](../architecture/06-data-storage.md): `board_rooms` с постоянным last_seq/snapshot_seq, `board_updates`, `board_snapshots` и receipts update_id. Каждый `lesson_id` обозначает новую независимую доску; состояние предыдущего урока не продолжается автоматически.
 
-Механика `seq`: монотонный per-room счётчик выдаёт БД при append — `INSERT ... seq = COALESCE(MAX(seq), 0) + 1` в транзакции; гонка двух инстансов разрешается PK-конфликтом `(lesson_id, seq)` + retry. Глобального порядка между комнатами нет и не нужно.
+Механика seq: атомарный UPDATE board_rooms.last_seq + INSERT update/receipt в одной транзакции. Счётчик постоянный и не зависит от pruning; MAX(seq) очищаемого журнала не используется. Повтор update_id/digest возвращает сохранённый seq.
 
 Инварианты:
 
 - **Сначала персист, потом fan-out.** Апдейт, который увидел другой участник, уже в логе — падение инстанса между append и broadcast теряет только доставку (клиент догонит через sync), не данные.
 - **`sync_response` = снапшот + `updates WHERE seq > upto_seq`.** Сервер шлёт надмножество, не дифф — клиентский Yjs идемпотентно отбрасывает применённое. Переплата трафиком на reconnect — осознанная цена ([ADR-002](../adr/ADR-002-crdt-sync-path-a.md)).
-- **Снапшот — оптимизация чтения, не источник истины.** Потеря снапшота лечится replay'ем полного лога; апдейты до снапшота удаляются только после его записи (или архивируются в MinIO `board-archive` для history).
+- **После pruning snapshot обязателен.** Атомарное переключение snapshot_seq, согласованное чтение и backup пары snapshot+tail — по [05](../architecture/05-realtime-whiteboard.md). Полный replay возможен только с проверенным полным архивом.
 
 ### Redis (эфемерное)
 
@@ -82,7 +82,7 @@ ER-диаграмма: [realtime-db.puml](../diagrams/db/realtime-db.puml). DDL 
 
 - **Апдейт доски** — [whiteboard-sync.puml](../diagrams/sequence/whiteboard-sync.puml): `board.update` → append в лог → publish в Redis-канал → broadcast всеми инстансами своим клиентам (кроме отправителя).
 - **Reconnect / холодный вход** — `sync_request` (state vector) → `sync_response` (snapshot + tail) → офлайн-правки клиента уходят после синхронизации, конфликты разрешает CRDT. Тот же поток для нового участника и после падения инстанса.
-- **Чат комнаты** — broadcast сразу (latency-first), персист в Core асинхронно; история после урока — обычный REST к Core.
+- **Чат комнаты** — Core authorization/commit, затем durable ack и broadcast; история после урока — обычный REST к Core.
 - **Компакция** — сайдкар по порогу (N апдейтов / M байт) сливает snapshot + tail → новый снапшот; старые апдейты — удалить или в MinIO.
 - **Падение инстанса** — клиенты переподключаются через Nginx к любому другому; тот подписывается на Redis-каналы комнаты и отдаёт snapshot + tail. Теряются только TCP-соединения.
 
@@ -90,7 +90,7 @@ ER-диаграмма: [realtime-db.puml](../diagrams/db/realtime-db.puml). DDL 
 
 - Инстансы равнозначны: нет sticky sessions, нет лидера, нет внутреннего состояния. N инстансов держат соединения, Redis Pub/Sub связывает их per-room.
 - Узкие места по порядку появления: количество одновременных WS-соединений на инстанс (решается добавлением инстансов), пропускная способность Redis Pub/Sub (решается шардированием каналов), запись лога в Postgres (решается батчингом append'ов).
-- Деградации изящные: без Redis — комнаты на одном инстансе продолжают работать; без Postgres — broadcast живёт, sync и персист недоступны (соединения рвём, чтобы клиенты не считали данные сохранёнными).
+- Деградации изящные: без Redis — комнаты на одном инстансе продолжают работать; без Postgres новые durable updates не подтверждаются и не рассылаются; клиент сохраняет pending состояние.
 
 ## Безопасность
 
@@ -103,5 +103,9 @@ ER-диаграмма: [realtime-db.puml](../diagrams/db/realtime-db.puml). DDL 
 
 - **Состояния в инстансах.** Всё восстановимое — в Redis и realtime_db; иначе падение инстанса = потеря данных и сложный failover.
 - **CRDT-мержа на сервере.** Нет зрелого Yjs на Go, и он не нужен: апдейты коммутативны и идемпотентны, мержат клиенты ([ADR-002](../adr/ADR-002-crdt-sync-path-a.md)).
-- **Персистентности чата.** Один владелец у всех чатов — Core; Realtime только форвардит с гарантией «дойдёт хотя бы раз» (ретраи по `message_id`).
+- **Персистентности чата.** Один владелец у всех чатов — Core; Realtime вызывает Core до ack/broadcast; pending retry выполняется с тем же message_id, история Core восстанавливает пропуски.
 - **Kafka для board-апдейтов.** Это не межсервисные события, а клиентский поток: Redis Pub/Sub дешевле, а durable-гарантию даёт лог в Postgres, не шина.
+
+## Гарантии первого среза
+
+MVP 1.0 уже проверяет durable ack чата/доски и потерю Redis-подписки без разрыва WS. Snapshot→live использует subscribe/buffer → consistent snapshot+tail → buffered tail. Watermark из БД выявляет пропуски; повторная подписка всегда запускает sync. Board receipt не удаляется вместе с bytes до окончания replay window. Подробный протокол, лимиты и GC — [05](../architecture/05-realtime-whiteboard.md). Групповые инструменты и material export появляются в 2.0; нагрузочный профиль всего продукта подтверждается в 2.1.

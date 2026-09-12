@@ -102,6 +102,14 @@ entity "auth_action_requests" as actions {
   consumed_at : timestamptz
 }
 
+entity "auth_delivery_payloads" as delivery {
+  * action_request_id : uuid <<PK, FK>>
+  --
+  * ciphertext : bytea
+  * key_id : text
+  * expires_at : timestamptz
+}
+
 entity "auth_audit_log" as audit {
   * id : uuid <<PK>>
   --
@@ -124,6 +132,7 @@ entity "signing_keys" as keys {
 entity "outbox" as outbox {
   * event_id : uuid <<PK>>
   --
+  * aggregate_version : bigint
   * aggregate_id : uuid
   * topic : text
   * event_type : text
@@ -144,6 +153,12 @@ users ||--o{ oauth
 identities ||--o{ sessions
 sessions ||--o{ refresh
 identities ||--o{ actions
+actions ||--o| delivery
+note bottom of delivery
+  AEAD payload отдельно от token_hash;
+  TTL <= action TTL; очистка по consumption,
+  revoke, expiry или CompleteDelivery.
+end note
 refresh |o--o| refresh : replaced_by
 
 note bottom of identities

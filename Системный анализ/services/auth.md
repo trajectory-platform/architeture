@@ -92,7 +92,7 @@ Gateway формирует клиентский `init` из доверенных
 | Lifecycle | `BlockIdentity`, `UnblockIdentity`, `ScheduleDeletion`, `CancelDeletion` | Управление статусом аккаунта |
 | Administration | `SearchIdentities`, `GetIdentity` | Выдать Auth-owned часть списка и карточки пользователя для Gateway aggregation |
 | Administration | `StartImpersonation`, `EndImpersonation` | Создать и завершить read-only impersonation context на 30 минут |
-| Delivery | `GetPasswordResetDelivery`, `GetDeliveryPayload` | Защищённо выдать Notification Service одноразовые данные для password reset и других delivery requests |
+| Delivery | `GetPasswordResetDelivery`, `GetDeliveryPayload`, `CompleteDelivery` | Защищённо выдать Notification Service одноразовые данные для password reset и других delivery requests |
 
 RPC управления чужой identity требуют actor context и соответствующий permission. Gateway аутентифицирует пользователя, но Auth повторно проверяет permission и бизнес-инварианты.
 
@@ -247,6 +247,14 @@ CREATE TABLE auth_action_requests (
     created_at     timestamptz NOT NULL
 );
 
+CREATE TABLE auth_delivery_payloads (
+    action_request_id uuid PRIMARY KEY REFERENCES auth_action_requests(id) ON DELETE CASCADE,
+    ciphertext        bytea NOT NULL, -- AEAD: token/URL и адрес доставки; не plaintext
+    key_id            text NOT NULL,  -- ключ из secret storage, не из БД
+    expires_at        timestamptz NOT NULL,
+    created_at        timestamptz NOT NULL
+);
+
 CREATE TABLE audit_identity_links (
     audit_ref   uuid PRIMARY KEY,
     identity_id uuid UNIQUE NOT NULL REFERENCES identities(id)
@@ -269,7 +277,7 @@ CREATE TABLE auth_audit_log (
 );
 
 CREATE TABLE signing_keys (...); -- NEXT | ACTIVE | RETIRING | RETIRED
-CREATE TABLE outbox (...);       -- event_id, topic, message_key, payload, published_at
+CREATE TABLE outbox (...);       -- event_id, aggregate_id/version, topic, message_key, payload, published_at; см. 03
 ```
 
 `user_identities` и `staff_identities` взаимоисключающие; это проверяет deferred constraint trigger. `identities.email` становится `NULL` только при анонимизации, поэтому уникальный индекс допускает повторное использование освобождённого адреса.
@@ -391,3 +399,13 @@ T01–T11 создали ранний срез: одна роль в `identities
 5. Удалить чтение legacy columns только отдельной migration после наблюдаемого периода совместимости.
 
 Для опубликованного `auth.v1` несовместимая форма не меняется на месте. Contracts repository определяет, достаточно ли additive fields или требуется `auth.v2`.
+
+## Поставка и секреты доставки
+
+Confirmation/reset и block/unblock обязательны в MVP 1.0; multi-role/RBAC/session UI — 2.0, OAuth/deletion — 2.1. T23/T26/T28–T31 выполняются релизными частями, не требуют поставки всего Auth заранее; см. [09](../architecture/09-release-readiness.md).
+
+По [ADR-008](../adr/ADR-008-durable-delivery-and-recovery.md) `auth_delivery_payloads` создаётся в одной транзакции с action request и outbox. Hash служит проверке, ciphertext — повторной доставке после рестарта. AEAD использует отдельный nonce и привязку `request_id/kind` как associated data. `expires_at` не позднее TTL action request. Auth проверяет workload identity, назначение, срок и отсутствие consumption/revocation при каждой выдаче. Одинаковый действующий request возвращает тот же секрет; чтение не потребляет ссылку.
+
+После успешной отправки Notification сохраняет результат и идемпотентно вызывает `CompleteDelivery`; потеря этого RPC приводит только к повтору очистки. Потребление, отзыв, истечение request или CompleteDelivery удаляет ciphertext; scheduled cleanup очищает просроченное. Resend после очистки создаёт новый action request, отзывает предыдущий и публикует новое событие. Состояние «секрет отсутствует/истёк» терминально для старой доставки, не бесконечный retry. Миграции forward-only: legacy password reset request переносится/связывается с action request без изменения уже применённых T03 migrations.
+
+Приёмка 1.0 включает рестарт после commit до отправки, повторную доставку, недоступный ключ, очистку и попытку получить consumed secret. Поля ciphertext/address исключены из logging/tracing/DLQ.

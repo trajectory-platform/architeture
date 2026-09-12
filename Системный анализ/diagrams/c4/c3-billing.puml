@@ -5,7 +5,7 @@ title Trajectory — C3: Billing Service (components)
 
 Container(gateway, "API Gateway", "Go", "GetBalance, TopUp")
 Container(core, "Core Education Service", "Go", "PlaceHold в booking-саге; консьюмер payment.captured")
-ContainerDb(pg_billing, "billing_db", "PostgreSQL", "ledger_entries, holds, idempotency_keys, outbox")
+ContainerDb(pg_billing, "billing_db", "PostgreSQL", "accounts, ledger_entries, holds, idempotency_keys, outbox")
 ContainerQueue(kafka, "Apache Kafka", "KRaft", "education events consume; billing events publish")
 
 Container_Boundary(billing, "Billing Service") {
@@ -15,7 +15,7 @@ Container_Boundary(billing, "Billing Service") {
     Component(holds, "Holds", "Go package", "ACTIVE -> CAPTURED | RELEASED; захват = статус + строки леджера + outbox одной транзакцией")
     Component(consumers, "Event Consumers", "Go goroutines", "booking.cancelled / lesson.completed; идемпотентно, offset после commit")
     Component(reconciler, "Reconciler", "Go goroutine", "Алерты: ACTIVE-холды старше порога, расхождения захватов и леджера")
-    Component(outbox_relay, "Outbox Relay", "Go goroutine", "FOR UPDATE SKIP LOCKED -> publish -> ack -> published_at")
+    Component(outbox_relay, "Outbox Relay", "Go goroutine", "aggregate lock -> version order -> publish -> ack -> published_at")
 }
 
 Rel(gateway, grpc_api, "GetBalance, TopUp (Idempotency-Key)", "gRPC")

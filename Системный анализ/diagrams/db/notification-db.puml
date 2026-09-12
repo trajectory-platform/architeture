@@ -59,6 +59,8 @@ entity "processed_events" as processed {
 entity "outbox" as outbox {
   * id : bigserial <<PK>>
   --
+  * event_id : uuid <<UQ>>
+  * aggregate_version : bigint
   * aggregate_id : uuid
   * topic : text
   * event_type : text

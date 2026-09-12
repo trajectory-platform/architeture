@@ -18,6 +18,7 @@
 | [06 — Данные и хранилища](architecture/06-data-storage.md) | Postgres per-service, ключевые таблицы (ledger, outbox, bookings), Redis, MinIO |
 | [07 — Безопасность](architecture/07-security.md) | JWT/JWKS, refresh-токены, room JWT, LiveKit-токены, роли |
 | [08 — Деплой и наблюдаемость](architecture/08-deployment-observability.md) | Docker-топология, Nginx, Prometheus/Grafana, метрики, логи |
+| [09 — Релизная готовность](architecture/09-release-readiness.md) | MVP 1.0/2.0/2.1, зависимости, решения и критерии приёмки |
 
 ### Документация сервисов
 
@@ -27,7 +28,7 @@
 |---|---|
 | [API Gateway](services/api-gateway.md) | REST-граница: JWT/JWKS, rate limiting, REST → gRPC, OpenAPI; stateless, без БД |
 | [Auth Service](services/auth.md) | Идентичность: регистрация, login, ротация refresh-токенов, ключи и JWKS |
-| [Core Education Service](services/core-education.md) | Предметное ядро: расписание, booking-сага, уроки, чаты, поддержка, отчёты, профили |
+| [Core Education Service](services/core-education.md) | Предметное ядро: расписание, booking-сага, уроки, записи, чаты, поддержка, профили |
 | [Learning Service](services/learning.md) | Учебный контур: курсы, группы, зачисления, задания, тесты, материалы и прогресс |
 | [Billing Service](services/billing.md) | Деньги: append-only ledger, холды, идемпотентность |
 | [Realtime Service](services/realtime.md) | WebSocket-хаб: Yjs-relay, чат комнат, presence; почти stateless |
@@ -44,6 +45,7 @@
 | [ADR-004](adr/ADR-004-grpc-internal-rest-edge.md) | gRPC внутри, REST на границе; контракты в `proto/` под buf |
 | [ADR-006](adr/ADR-006-auth-api-evolution-and-password-reset.md) | Эволюция Auth API, `event_id` и владение восстановлением пароля |
 | [ADR-007](adr/ADR-007-auth-identity-access-evolution.md) | Эволюция identity, множественных ролей, permissions и сессий Auth Service |
+| [ADR-008](adr/ADR-008-durable-delivery-and-recovery.md) | Durable ack, action delivery, account serialization и восстановление первого среза |
 
 ### Диаграммы
 

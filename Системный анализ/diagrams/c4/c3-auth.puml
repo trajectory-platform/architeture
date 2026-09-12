@@ -23,12 +23,13 @@ Container_Boundary(auth, "Auth Service") {
     Component(oauth, "OAuth Manager", "Go use case", "Яндекс ID, VK ID, Google; explicit account linking")
     Component(audit, "Audit", "Go repository", "Append-only auth audit в business transaction")
     Component(key_mgr, "Key Manager", "Go, service -> repository/postgres + internal/infra/keycrypto", "Жизненный цикл ключей: NEXT -> ACTIVE -> RETIRING -> RETIRED")
-    Component(outbox_relay, "Outbox Relay", "Go, pkg/outbox (started by app)", "FOR UPDATE SKIP LOCKED -> publish -> ack -> published_at")
+    Component(outbox_relay, "Outbox Relay", "Go, pkg/outbox (started by app)", "aggregate lock -> version order -> publish -> ack -> published_at")
 }
 
 Rel(gateway, grpc_api, "Register / Login / Refresh / Logout", "gRPC")
 Rel(gateway, jwks_ep, "Обновление кэша ключей (TTL, kid-промах)", "HTTP")
 Rel(realtime, jwks_ep, "Обновление кэша ключей", "HTTP")
+Rel(notification, grpc_api, "GetDeliveryPayload / GetPasswordResetDelivery / CompleteDelivery", "gRPC, workload identity")
 Rel(notification, jwks_ep, "Обновление кэша ключей", "HTTP")
 
 Rel(grpc_api, registrar, "Register")
@@ -43,7 +44,7 @@ Rel(registrar, pg_auth, "INSERT identities, credentials, outbox (одна тра
 Rel(pwd, pg_auth, "SELECT credentials", "SQL")
 Rel(refresh_mgr, pg_auth, "refresh_tokens: ротация, отзыв семьи", "SQL")
 Rel(access, pg_auth, "roles, permissions, assignments", "SQL")
-Rel(actions, pg_auth, "auth_action_requests + outbox", "SQL")
+Rel(actions, pg_auth, "auth_action_requests + AEAD delivery + outbox", "SQL")
 Rel(oauth, pg_auth, "oauth_connections + sessions", "SQL")
 Rel(audit, pg_auth, "auth_audit_log", "SQL")
 Rel(refresh_mgr, redis, "Блэклист jti при отзыве семьи", "RESP")

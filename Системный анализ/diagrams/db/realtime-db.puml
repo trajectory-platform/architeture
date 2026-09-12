@@ -1,47 +1,47 @@
 @startuml realtime-db
-title Trajectory — ER: realtime_db (Realtime Service)
-
+title Trajectory — ER: realtime_db (с MVP 1.0)
 hide circle
 skinparam linetype ortho
-
-entity "board_updates" as updates {
-  * lesson_id : uuid <<PK>>  -- агрегат Core, без cross-DB FK
-  * seq : bigint <<PK>>  -- монотонный per-room счётчик
-  --
-  * update : bytea  -- opaque Yjs update
-  * created_at : timestamptz
-}
-
-entity "board_snapshots" as snapshots {
+entity "board_rooms" as rooms {
   * lesson_id : uuid <<PK>>
-  * upto_seq : bigint <<PK>>  -- покрывает updates с seq <= upto_seq
   --
-  * snapshot : bytea  -- Y.encodeStateAsUpdate
+  * last_seq : bigint
+  * snapshot_seq : bigint
+}
+entity "board_updates" as updates {
+  * lesson_id : uuid <<PK, FK>>
+  * seq : bigint <<PK>>
+  --
+  * update : bytea
   * created_at : timestamptz
 }
-
-updates }o..o| snapshots : "компакция (Node-сайдкар):\nY.mergeUpdates(snapshot, tail)\n-> новый snapshot;\nстарые updates -> delete\nили архив в MinIO"
-
-note bottom of updates
-  lesson_id = новая независимая доска урока;
-  seq выдаёт БД при append:
-  COALESCE(MAX(seq), 0) + 1 в транзакции;
-  гонка инстансов -> PK-конфликт + retry.
-  Сначала персист, потом fan-out (Redis)
+entity "board_update_receipts" as receipts {
+  * lesson_id : uuid <<PK, FK>>
+  * update_id : uuid <<PK>>
+  --
+  * digest : bytea
+  * seq : bigint
+  * expires_at : timestamptz
+}
+entity "board_snapshots" as snapshots {
+  * lesson_id : uuid <<PK, FK>>
+  * upto_seq : bigint <<PK>>
+  --
+  * snapshot : bytea
+  * created_at : timestamptz
+}
+rooms ||--o{ updates
+rooms ||--o{ receipts
+rooms ||--o{ snapshots
+note bottom of rooms
+  UPDATE last_seq + INSERT update/receipt в одной tx;
+  last_seq не уменьшается при pruning;
+  snapshot_seq переключается атомарно с публикацией.
 end note
-
 note bottom of snapshots
-  sync_response = последний snapshot
-  + updates WHERE seq > upto_seq;
-  снапшот — оптимизация чтения:
-  потеря лечится replay'ем полного лога
-end note
-
-note as ephemeral
-  Вне Postgres (эфемерное, Redis):
-  room:{id}:members — TTL-ключи presence;
-  Pub/Sub канал per-room — fan-out.
-  Потеря Redis = переподключения,
-  не потеря данных
+  После pruning snapshot + tail обязательны.
+  Чтение согласованное; удаление только покрытых bytes.
+  Client snapshot не разрешает pruning.
+  Receipts переживают удаление bytes до конца replay window.
 end note
 @enduml

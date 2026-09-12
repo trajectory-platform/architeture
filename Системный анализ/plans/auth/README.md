@@ -114,3 +114,7 @@ Auth MVP evolution critical path: **T20 → T21 → T22 → T24 → T25 → T30 
 - Use branch `auth/Txx-short-name`, one PR per task, conventional commits.
 - Ship behavior tests with every task. Concurrency invariants require real Postgres integration tests.
 - Never replace an accepted ADR or product requirement silently. Raise a new ADR or explicit source correction.
+
+## Release mapping: MVP 1.0 / 2.0 / 2.1
+
+Технические фазы выше описывают зависимость полного Auth, а не запрещают релизные срезы. MVP 1.0 включает минимальные T20/T21 contracts/migrations, confirmation из T23, reset из T26, block/unblock из T28, audit из T29, transport/tests из T30/T31. Эти части не зависят от готового OAuth, UI сессий или редактируемых ролей. MVP 2.0 закрывает multi-role, staff permissions/invitations и sessions; MVP 2.1 — OAuth, deletion и полную regression-приёмку. Существующие T01–T19 migrations не переписываются. Подзадача/критерий имеет release ID и evidence; целая Txx остаётся PARTIAL до выполнения всех критериев. См. [релизную готовность](../../architecture/09-release-readiness.md).

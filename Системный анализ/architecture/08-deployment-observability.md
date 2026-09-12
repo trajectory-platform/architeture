@@ -92,3 +92,11 @@
 - **CI**: build + tests, `buf lint` и `buf breaking` на `proto/` (контракт не ломается незаметно), сборка образов, `plantuml -checkonly` для диаграмм документации.
 - **Локально**: полный `docker compose up` (включая LiveKit dev-mode, MinIO и одноброкерный Kafka KRaft) — контракты и состав зависимостей совпадают с production.
 - **Staging/prod**: тот же состав, отличия — только конфигурация (env), TLS-сертификаты и внешние тома данных.
+
+## Эксплуатация по релизам
+
+1.0: реальный Kafka/Notification email, ограничения ресурсов, проверка backup/restore БД и S3, алерты participant PENDING/compensation, durable ack и gap detection. В 2.0 отдельно развёртывается LiveKit Egress и Node board compactor при включении pruning; Egress пишет в S3 и требует собственного бюджета CPU/параллельных jobs. Health-only Learning 1.0 не подтверждает готовность его API.
+
+1.0 может использовать одноброкерный dev/stage как ограниченный учебный стенд; он не доказывает отказоустойчивость production с replication factor 3/min ISR 2 по ADR-003. Итоговый профиль 2.1 фиксирует регион, сеть, браузеры, размер доски, 100 комнат/800 участников, число записей, RPO/RTO и измеренные задержки. Перенос полной нагрузочной приёмки на 2.1 не откладывает fault tests включённых сценариев.
+
+S3 остаётся контрактом. Поддерживаемая поставка, версия, patching и backup выбираются до stage (DEC-08); community MinIO помечен unmaintained и архивирован, поэтому его наличие в Compose не является подтверждением production-поддержки. [Репозиторий MinIO](https://github.com/minio/minio). Решения и evidence — [09](09-release-readiness.md).

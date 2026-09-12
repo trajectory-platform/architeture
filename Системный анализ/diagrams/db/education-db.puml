@@ -43,8 +43,10 @@ entity "bookings" as bookings {
 }
 
 entity "booking_participants" as booking_participants {
-  * booking_id : uuid <<PK, FK>>
-  * student_id : uuid <<PK>>
+  * id : uuid <<PK>>
+  --
+  * booking_id : uuid <<FK>>
+  * student_id : uuid -- UNIQUE (booking_id, student_id)
   --
   * status : text
   * price_amount : bigint
@@ -84,7 +86,7 @@ entity "lesson_recordings" as recordings {
   * id : uuid <<PK>>
   --
   * lesson_id : uuid <<FK>>
-  * object_key : text <<UQ>>
+  object_key : text <<UQ>> -- до READY может отсутствовать
   * status : text
   ready_at : timestamptz
   delete_after : timestamptz
@@ -132,6 +134,15 @@ entity "support_tickets" as tickets {
   assignee_id : uuid
 }
 
+entity "webhook_inbox" as webhooks {
+  * provider_event_id : text <<PK>>
+  --
+  * event_type : text
+  * room_id : text
+  * received_at : timestamptz
+  * safe_payload : jsonb
+}
+
 entity "processed_events" as processed {
   * event_id : uuid <<PK>>
   --
@@ -142,6 +153,8 @@ entity "processed_events" as processed {
 entity "outbox" as outbox {
   * id : bigserial <<PK>>
   --
+  * event_id : uuid <<UQ>>
+  * aggregate_version : bigint
   * aggregate_id : uuid
   * topic : text
   * event_type : text
@@ -169,11 +182,14 @@ end note
 
 note bottom of booking_participants
   цена фиксируется с каждого ученика;
-  отдельный hold_reference_id на участника
+  hold_reference_id = participant.id;
+  вместимость PENDING+CONFIRMED под booking row lock
 end note
 
 note bottom of recordings
   READY: delete_after = ready_at + 1 month;
-  после срока S3 object удаляется
+  REQUESTED/RECORDING/PROCESSING/READY;
+  DELETING -> DELETED, либо FAILED;
+  после срока access закрыт, S3 удаляется с retry
 end note
 @enduml

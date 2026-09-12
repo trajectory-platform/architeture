@@ -28,3 +28,7 @@ In:
 - [ ] Forced reset rejects OAuth-only identities and its 24-hour link differs from the one-hour self-service recovery link.
 - [ ] Email changes only after new-address confirmation; collisions are race-safe.
 - [ ] Password, hashes, raw tokens and emails are absent from logs and event payloads where prohibited.
+
+## Релизная поставка и recovery
+
+Часть confirmation/self-service reset и необходимые forward-only migrations поставляются в MVP 1.0 по [09 — Релизная готовность](../../../architecture/09-release-readiness.md); полный остаток задачи закрывается позже по матрице. Hash action token и AEAD delivery payload хранятся раздельно по [ADR-008](../../../adr/ADR-008-durable-delivery-and-recovery.md). Требуется проверка рестарта между commit и отправкой, повторной выдачи того же действующего URL и очистки по CompleteDelivery/consumption/expiry. Готовность одной части не отмечает всю задачу DONE.

@@ -11,7 +11,13 @@ participant "Learning\n(consumer group)" as learning
 database "learning_db" as ldb
 participant "Notification\n(consumer group)" as notification
 
-lk -> core: webhook room_finished
+lk -> core: подписанный webhook (может не доставиться)
+core -> edb: durable webhook inbox, UNIQUE provider event ID
+core -> core: EndLesson / timer / reconciliation\nпроверить attendance + policy; CAS outcome
+note over core
+  room_finished не доказывает состоявшийся урок.
+  Неоднозначный исход -> очередь разбора.
+end note
 group Transaction education_db
   core -> edb: lesson=COMPLETED\nattendance per student
   core -> edb: INSERT outbox lesson.completed\nparticipant outcomes
@@ -20,6 +26,8 @@ core -> kafka: publish lesson.completed\nkey=lesson_id, acks=all
 
 par Billing: деньги
   kafka -> billing: lesson.completed
+  group Одна ограниченная transaction billing_db
+  billing -> bdb: receipt event_id; lock accounts в порядке ID
   loop каждый student participant
     alt присутствовал или пропустил free-cancel window
       billing -> bdb: hold ACTIVE -> CAPTURED\nfixed price debit/credit
@@ -27,8 +35,9 @@ par Billing: деньги
       billing -> bdb: hold -> RELEASED / partial result
     end
   end
-  billing -> bdb: INSERT outbox payment.captured
-  billing -> kafka: commit lesson offset
+  billing -> bdb: INSERT receipt + outbox по каждому outcome
+  end
+  billing -> kafka: после commit: contiguous next offset
   billing -> kafka: publish payment.captured
 else Learning: прогресс
   kafka -> learning: lesson.completed
@@ -50,6 +59,7 @@ core -> kafka: commit billing offset
 note over kafka
   Consumer groups независимы.
   Offset фиксируется только после DB commit.
-  Повтор события безопасен по event_id.
+  Повтор того же outcome безопасен по event_id.
+  Противоположный terminal outcome -> reconciliation.
 end note
 @enduml

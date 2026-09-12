@@ -24,8 +24,8 @@ Billing владеет деньгами — и только деньгами. М
 | RPC | Вызывает | Назначение | Ошибки |
 |---|---|---|---|
 | `PlaceHold` | Core (booking-сага, синхронно) | Резерв средств: проверка доступного баланса, `INSERT holds (ACTIVE)` | `ResourceExhausted` (недостаточно средств) |
-| `CaptureHold` | консьюмер `lesson.completed` (внутренний) | Холд → пара строк леджера + `payment.captured` | `FailedPrecondition` (холд не ACTIVE — но для consumer-пути это no-op, не ошибка) |
-| `ReleaseHold` | консьюмер `booking.cancelled` (внутренний) | Холд закрыт, средства снова доступны | идемпотентен: повтор на закрытый холд — no-op |
+| `CaptureHold` | консьюмер `lesson.completed` (внутренний) | Холд → пара строк леджера + `payment.captured` | `FailedPrecondition` (холд не ACTIVE — consumer различает повтор результата и конфликт) |
+| `ReleaseHold` | консьюмер `booking.cancelled` (внутренний) | Холд закрыт, средства снова доступны | идемпотентен для того же результата; противоположный terminal outcome — conflict |
 | `GetBalance` | Gateway | Доступный баланс = `SUM(ledger)` − активные холды | — |
 | `TopUp` | Gateway | Пополнение: строка `topup` в леджер | `AlreadyExists` (повтор ключа с другим телом) |
 
@@ -42,7 +42,7 @@ Billing владеет деньгами — и только деньгами. М
 | `payment.captured` | публикует | Через outbox в транзакции захвата; Core помечает урок оплаченным |
 | `hold.released` | публикует | Через outbox в транзакции release; для нотификаций/аудита |
 
-Kafka consumers фиксируют offset после успешной транзакции. Обработка идемпотентна: повторная доставка на уже CAPTURED/RELEASED hold — no-op.
+Kafka consumers фиксируют offset после успешной транзакции. Обработка идемпотентна: повтор того же event/outcome — no-op. Несовместимый outcome для терминального hold фиксируется как conflict для reconciliation; это не обычный дубликат.
 
 ## Данные: billing_db
 
@@ -60,13 +60,13 @@ CREATE TABLE idempotency_keys (
 );
 ```
 
-Счета (`account_id`) — без отдельной таблицы: это uuid identity из Auth (студенты, преподаватели) плюс фиксированный системный uuid платформы (комиссии, штрафы). Счёт «существует», как только у него появилась первая строка леджера.
+Постоянная таблица `accounts` содержит `id`, `currency` и дату создания, без изменяемого balance. Account не удаляется при нулевом балансе: его строка служит границей блокировки. В 1.0 счёт ученика/преподавателя связан с identity, есть системный счёт; модель плательщика-представителя фиксируется до 2.0 (DEC-03).
 
 Инварианты:
 
 - **Леджер append-only.** Строки не обновляются и не удаляются — на уровне прав БД (роль сервиса без UPDATE/DELETE на `ledger_entries`). Корректировка — компенсирующая строка (`refund`), не правка истории.
 - **Баланс воспроизводим на любой момент**: `SUM(amount) WHERE account_id = X AND created_at <= T`.
-- **Доступный баланс** = `SUM(ledger)` − `SUM(holds WHERE status = 'ACTIVE')` — проверяется в транзакции `PlaceHold`.
+- **Доступный баланс** = `SUM(ledger)` − `SUM(holds WHERE status = 'ACTIVE')` — проверяется в транзакции `PlaceHold` после `SELECT accounts ... FOR UPDATE`. Все изменения доступных средств используют ту же блокировку; несколько счетов блокируются по возрастанию ID.
 - **Захват атомарен**: `holds.status → CAPTURED` + строки леджера + outbox `payment.captured` — одна транзакция. Никакого состояния «холд захвачен, а денег нет».
 - **Сумма захвата = сумме холда**: захватывается ровно то, что резервировалось; пересчёты цены после брони невозможны.
 - **`holds.idempotency_key UNIQUE`** — гонка двух `PlaceHold` с одним ключом разрешается БД.
@@ -78,11 +78,11 @@ PlaceHold ──► ACTIVE ──┬──(lesson.completed)──► CAPTURED  
                        └──(booking.cancelled)─► RELEASED   + hold.released; частичный возврат: + строки штрафа
 ```
 
-Терминальные статусы финальны: CAPTURED-холд нельзя release, RELEASED — нельзя capture (`FailedPrecondition` для RPC-пути, no-op для consumer-пути — событие могло приехать повторно).
+Терминальные статусы финальны: CAPTURED-холд нельзя release, RELEASED — нельзя capture (`FailedPrecondition` для RPC; consumer повторяет тот же outcome как no-op, а противоположный outcome сохраняет в reconciliation queue с алертом).
 
 ## Ключевые потоки
 
-- **PlaceHold (синхронный, в booking-саге)** — [booking-saga.puml](../diagrams/sequence/booking-saga.puml). Транзакция: доступный баланс ≥ amount → `INSERT holds (ACTIVE, idempotency_key)`. Потерянный ответ → Core-reconciler повторяет с тем же ключом, Billing возвращает сохранённый исход.
+- **PlaceHold (синхронный, в booking-саге)** — [booking-saga.puml](../diagrams/sequence/booking-saga.puml). Транзакция: заблокировать account → проверить scoped key/request_hash → доступный баланс ≥ amount → `INSERT holds (ACTIVE, idempotency_key, request_hash)` и сохранённый исход. Потерянный ответ → Core-reconciler повторяет с тем же ключом, Billing возвращает сохранённый исход.
 - **CaptureHold (по событию)** — [lesson-completed-billing.puml](../diagrams/sequence/lesson-completed-billing.puml). Одна транзакция: статус, пара строк ledger, outbox. Kafka offset фиксируется после commit.
 - **ReleaseHold (по событию)** — своевременная отмена валидна сразу в Core; деньги вернутся при первой доступности Billing, Kafka гарантирует доставку ([04](../architecture/04-sagas-and-consistency.md)). После окна бесплатной отмены Core публикует денежный результат, который сохраняет полное или частичное списание.
 - **Reconciliation** — инвариант для мониторинга: нет ACTIVE-холдов старше окна урока + порога; сумма захватов = сумме соответствующих строк леджера. Расхождение = алерт, не «авось».
@@ -91,7 +91,7 @@ PlaceHold ──► ACTIVE ──┬──(lesson.completed)──► CAPTURED  
 
 - Баланс и леджер видит только владелец счёта; admin — через отдельные admin-эндпоинты ([07](../architecture/07-security.md)).
 - Учётка billing_db недоступна другим сервисам: компрометация Core не открывает леджер.
-- Внутренние RPC несут идентичность исходного пользователя в metadata — Billing проверяет, что `TopUp`/`GetBalance` запрошен владельцем счёта.
+- Внутренние RPC несут идентичность исходного пользователя в metadata — Billing разрешает `GetBalance` владельцу либо сотруднику с правом просмотра. `TopUp` требует отдельного финансового разрешения STAFF и audit reason; принадлежность счёта вызывающему не разрешает пополнение. В 1.0 это проверка seed STAFF на сервере, в 2.0 — granular permission; PSP identity появится вне MVP.
 
 ## Чего здесь нет — и почему
 
@@ -99,3 +99,13 @@ PlaceHold ──► ACTIVE ──┬──(lesson.completed)──► CAPTURED  
 - **Знания о предметной области.** Никаких `lesson_id`, `teacher_id`, attendance или cancellation windows — только `account_id`, зафиксированный `amount` и опаковый `reference_id`. Это позволяет переиспользовать Billing для любых будущих платных сущностей.
 - **Синхронных вызовов в Core.** Связь «урок завершён → захват» — только события: Billing может лежать час, деньги сойдутся после рестарта.
 - **Внешнего PSP.** Эквайринг — отдельная интеграция в будущем; модель готова (TopUp идемпотентен по внешнему id платежа).
+
+## Границы релизов и денежный контракт
+
+В MVP 1.0 поставляется денежное ядро с тестовыми admin-пополнениями. Нулевой commission snapshot означает только отсутствие комиссии в этом срезе; teacher credit не обещает пользовательский payout до 2.1. Настраиваемые tariffs/commission, packages/subscriptions и корректировки — 2.0; payout workflow/выгрузки — 2.1. Точный расчёт DEC-02/DEC-03 закрывается до M20-19 и не считается готовым из наличия ledger.
+
+`Idempotency-Key` scoped по caller/service, методу и владельцу операции; хранится hash канонического запроса и исход, включая бизнес-отказ. Повтор с другим телом — conflict. Для группы используется отдельный ключ `place-hold:<participant_id>`, стабильный при повторе, и уникальный hold reference на participant. Транспортный timeout не записывается как окончательный отказ. Истечение ключа не разрешает повтор денежной операции с тем же reference.
+
+Все расходы и отрицательные корректировки блокируют account до проверки баланса. Capture/release блокируют account, затем hold; несколько счетов — в одинаковом порядке. Совместимые проводки, изменение hold, receipt события и outbox коммитятся атомарно. Частичный результат удовлетворяет `capture_amount + release_amount = hold.amount`; получатели и суммы берутся из неизменяемого settlement snapshot. У повторного capture отсутствует новый денежный эффект.
+
+Распределённое событие с несколькими participant outcomes обрабатывается одной ограниченной транзакцией либо с durable receipt `(event_id, participant_id)`; общий event не отмечается обработанным до завершения всех частей. Offset продвигается по правилам [03](../architecture/03-communication.md).

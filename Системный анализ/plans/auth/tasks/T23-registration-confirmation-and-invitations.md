@@ -29,3 +29,7 @@ In:
 - [ ] Teacher registration produces enough safe event data for one idempotent `draft` application in Core Education.
 - [ ] Duplicate email and resend responses do not expose account existence beyond the explicit registration collision contract.
 - [ ] No raw token or URL appears in Kafka, logs, traces or DLQ payload fixtures.
+
+## Релизная поставка и recovery
+
+Часть confirmation/self-service reset и необходимые forward-only migrations поставляются в MVP 1.0 по [09 — Релизная готовность](../../../architecture/09-release-readiness.md); полный остаток задачи закрывается позже по матрице. Hash action token и AEAD delivery payload хранятся раздельно по [ADR-008](../../../adr/ADR-008-durable-delivery-and-recovery.md). Требуется проверка рестарта между commit и отправкой, повторной выдачи того же действующего URL и очистки по CompleteDelivery/consumption/expiry. Готовность одной части не отмечает всю задачу DONE.

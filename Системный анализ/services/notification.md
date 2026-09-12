@@ -51,3 +51,9 @@ Gateway вызывает будущий `notification.v1` только для п
 ## Надёжность и масштабирование
 
 Сервис масштабируется репликами в одной Kafka consumer group; partitions распределяются между экземплярами, а `FOR UPDATE SKIP LOCKED` раздаёт доставки воркерам. Внешние провайдеры — главная граница пропускной способности, поэтому для каждого канала нужны отдельные очередь/конкурентность, exponential backoff с jitter и circuit breaker. Метрики: consumer lag, возраст PENDING-доставки, попытки, ошибки и latency по провайдеру, число дедуплицированных событий.
+
+## Релизная доставка и завершение Auth delivery
+
+В 1.0 обязательны Auth transactional email и персональный WS/inbox уже вне комнаты; полный набор reminders/preferences — 2.0. После успешной внешней отправки worker фиксирует SENT/provider reference и повторяемую очистку через Auth `CompleteDelivery`. При падении до фиксации SENT провайдер может получить повтор той же ссылки; это не создаёт нового action token. Worker не сохраняет raw URL в deliveries. Expired/consumed/revoked action не переиздаётся: доставка получает терминальный результат, новый resend инициируется через Auth.
+
+WS-сигнал best-effort; high-water heartbeat и переподписка Redis инициируют ListNotifications даже при живом клиентском сокете. Подтверждение broker/WS не означает прочтение: его задаёт MarkRead. С MVP 2.0 scheduled reminder имеет `(entity_id, schedule_version, recipient, kind)`; перенос/отмена инвалидирует старую версию до отправки. Доменные владельцы публикуют изменение расписания/дедлайна; Notification владеет delivery schedule, а не самим сроком урока.

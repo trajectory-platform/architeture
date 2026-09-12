@@ -7,14 +7,14 @@
 - cross-service join'ы и foreign key между базами разных сервисов;
 - чтение чужих таблиц «потому что быстрее».
 
-Чужие данные получают через gRPC владельца или реплицируют у себя по событиям (например, Core держит локальную проекцию «урок оплачен» по `payment.captured`). Ссылки между агрегатами разных сервисов — просто uuid без FK (`holds.reference_id` → booking).
+Чужие данные получают через gRPC владельца или реплицируют у себя по событиям (например, Core держит локальную проекцию «урок оплачен» по `payment.captured`). Ссылки между агрегатами разных сервисов — просто uuid без FK (`holds.reference_id` → booking_participant).
 
 ```
-auth_db      — identities, credentials, refresh_tokens, password_reset_requests, signing keys, outbox
+auth_db      — identities/subtypes, roles/permissions, sessions, credentials, refresh_tokens, auth_action_requests, auth_delivery_payloads, signing keys, audit, outbox
 education_db — profiles, slots, bookings, booking_participants, lessons, attendance, recordings, chats, tickets, outbox
 learning_db  — courses, groups, enrollments, homework, tests, materials, progress, processed_events, outbox
-billing_db   — ledger_entries, holds, idempotency_keys, outbox
-realtime_db  — board_updates, board_snapshots (только лог доски)
+billing_db   — accounts, ledger_entries, holds, idempotency_keys, outbox
+realtime_db  — board_rooms, board_updates, board_snapshots (состояние доски)
 notification_db — notification_preferences, templates, notifications, deliveries, processed_events
 ```
 
@@ -36,13 +36,15 @@ CREATE TABLE bookings (
 );
 
 CREATE TABLE booking_participants (
+    id               uuid        PRIMARY KEY,
     booking_id       uuid        NOT NULL REFERENCES bookings(id),
     student_id       uuid        NOT NULL,
-    status           text        NOT NULL,  -- PENDING | CONFIRMED | CANCELLED | NO_SHOW
+    status           text        NOT NULL,  -- PENDING | CONFIRMED | CANCELLED | NO_SHOW | FAILED
     price_amount     bigint      NOT NULL CHECK (price_amount > 0),
     currency         char(3)     NOT NULL,
     hold_reference_id uuid       UNIQUE NOT NULL,
-    PRIMARY KEY (booking_id, student_id)
+    UNIQUE (booking_id, student_id),
+    CHECK (hold_reference_id = id)
 );
 -- Для группы цена и hold фиксируются отдельно с каждого ученика.
 
@@ -57,9 +59,16 @@ ALTER TABLE bookings ADD CONSTRAINT no_double_booking
 ### billing_db: append-only ledger
 
 ```sql
+CREATE TABLE accounts (
+    id         uuid PRIMARY KEY,
+    currency   char(3) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Все изменения доступных средств: SELECT accounts ... FOR UPDATE до проверки.
+
 CREATE TABLE ledger_entries (
     id           bigserial   PRIMARY KEY,
-    account_id   uuid        NOT NULL,      -- студент, преподаватель, платформа
+    account_id   uuid        NOT NULL REFERENCES accounts(id),
     amount       bigint      NOT NULL,      -- минорные единицы; >0 credit, <0 debit
     entry_type   text        NOT NULL,      -- topup | capture | refund | payout
     reference_id uuid,                       -- booking / lesson / hold
@@ -69,11 +78,12 @@ CREATE TABLE ledger_entries (
 
 CREATE TABLE holds (
     id              uuid        PRIMARY KEY,
-    account_id      uuid        NOT NULL,
+    account_id      uuid        NOT NULL REFERENCES accounts(id),
     amount          bigint      NOT NULL CHECK (amount > 0),
-    reference_id    uuid        NOT NULL,   -- booking_participant_id
+    reference_id    uuid        UNIQUE NOT NULL, -- booking_participant_id
     status          text        NOT NULL,   -- ACTIVE | CAPTURED | RELEASED
-    idempotency_key text        UNIQUE NOT NULL,
+    idempotency_key text        UNIQUE NOT NULL, -- scoped caller/method/operation
+    request_hash    bytea       NOT NULL,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 -- Доступный баланс = SUM(ledger) - SUM(holds WHERE status='ACTIVE').
@@ -86,12 +96,15 @@ Capture холда = одна транзакция: `holds.status → CAPTURED` 
 ```sql
 CREATE TABLE outbox (
     id           bigserial   PRIMARY KEY,
+    event_id     uuid        UNIQUE NOT NULL,
     aggregate_id uuid        NOT NULL,
+    aggregate_version bigint NOT NULL,
     topic        text        NOT NULL,
     event_type   text        NOT NULL,
     payload      bytea       NOT NULL,      -- protobuf события
     created_at   timestamptz NOT NULL DEFAULT now(),
-    published_at timestamptz
+    published_at timestamptz,
+    UNIQUE (aggregate_id, aggregate_version)
 );
 CREATE INDEX outbox_unpublished ON outbox (id) WHERE published_at IS NULL;
 ```
@@ -101,6 +114,15 @@ CREATE INDEX outbox_unpublished ON outbox (id) WHERE published_at IS NULL;
 ### realtime_db: лог доски
 
 ```sql
+CREATE TABLE board_rooms (
+    lesson_id    uuid PRIMARY KEY,
+    last_seq     bigint NOT NULL DEFAULT 0,
+    snapshot_seq bigint NOT NULL DEFAULT 0,
+    CHECK (last_seq >= snapshot_seq AND snapshot_seq >= 0)
+);
+-- В одной tx: UPDATE board_rooms SET last_seq=last_seq+1 ... RETURNING last_seq;
+-- затем INSERT update с этим seq. Счётчик не удаляется при pruning.
+
 CREATE TABLE board_updates (
     lesson_id  uuid        NOT NULL,
     seq        bigint      NOT NULL,        -- монотонный per-room счётчик
@@ -108,6 +130,16 @@ CREATE TABLE board_updates (
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (lesson_id, seq)
 );
+
+CREATE TABLE board_update_receipts (
+    lesson_id uuid NOT NULL REFERENCES board_rooms(lesson_id),
+    update_id uuid NOT NULL,
+    digest bytea NOT NULL,
+    seq bigint NOT NULL,
+    expires_at timestamptz NOT NULL,
+    PRIMARY KEY (lesson_id, update_id)
+);
+-- Receipts переживают pruning bytes до конца согласованного offline replay window.
 
 CREATE TABLE board_snapshots (
     lesson_id  uuid        NOT NULL,
@@ -153,14 +185,28 @@ CREATE TABLE messages (
 
 Один механизм для всех видов чатов; тикеты поддержки — `chats.kind = 'support'` + отдельная таблица `support_tickets (chat_id, status, assignee_id)` со статусами open / pending / resolved / closed. Поиск по сообщениям — Postgres full-text (`tsvector`-индекс по `body`) — на MVP достаточно.
 
+### education_db: входящие webhook observations
+
+```sql
+CREATE TABLE webhook_inbox (
+    provider_event_id text PRIMARY KEY,
+    event_type text NOT NULL,
+    room_id text NOT NULL,
+    received_at timestamptz NOT NULL DEFAULT now(),
+    safe_payload jsonb NOT NULL
+);
+```
+
+Подпись проверяется до INSERT; Core state machine дедуплицирует и применяет наблюдение отдельно от транспортной доставки. Payload исключает секреты и имеет срок хранения.
+
 ### education_db: записи уроков
 
 ```sql
 CREATE TABLE lesson_recordings (
     id          uuid        PRIMARY KEY,
     lesson_id   uuid        NOT NULL,
-    object_key  text        NOT NULL UNIQUE,
-    status      text        NOT NULL,  -- RECORDING | READY | DELETED | FAILED
+    object_key  text        UNIQUE, -- известен после успешной обработки
+    status      text        NOT NULL,  -- REQUESTED | RECORDING | PROCESSING | READY | DELETING | DELETED | FAILED
     ready_at    timestamptz,
     delete_after timestamptz,
     deleted_at  timestamptz,
@@ -301,3 +347,9 @@ S3-совместимое объектное хранилище, бакеты:
 ## Миграции
 
 На сервис — свой каталог миграций (golang-migrate / goose), применяются при деплое сервиса-владельца. Общих миграций нет — это следствие принципа «база на сервис».
+
+## Условия использования схем по релизам
+
+DDL здесь логический, не migration script. `booking_participants.id` — стабильный hold reference; строка booking резервирует время один раз, вместимость проверяется под её row lock. Индивидуальный сценарий 1.0 использует одну participant row; группы — 2.0. Миграции должны сохранять существующие ID/денежные связи при upgrade.
+
+`board_rooms.snapshot_seq` переключается только на проверенный snapshot в одной транзакции с pruning; consistent read (например REPEATABLE READ) возвращает его и хвост до last_seq. Для 1.0 допустим полный лог без pruning; клиентский snapshot не разрешает удаление. `auth_delivery_payloads` и правила очистки описаны в [Auth](../services/auth.md) и ADR-008. Наличие поля payout/recording не означает поставку соответствующего workflow в 1.0.

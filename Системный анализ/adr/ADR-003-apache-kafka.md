@@ -25,7 +25,7 @@
 - `trajectory.billing.events.v1`;
 - `trajectory.notification.events.v1`.
 
-Envelope содержит `event_id`, `event_type`, `occurred_at`, `schema_version`, `producer`, protobuf payload и безопасные tracing headers. Kafka message key — стабильный `aggregate_id`. Поэтому события одного агрегата попадают в одну partition и сохраняют порядок. Глобальный порядок между агрегатами не гарантируется и не требуется.
+Envelope содержит `event_id`, `event_type`, `occurred_at`, `schema_version`, `producer`, protobuf payload и безопасные tracing headers. Kafka message key — стабильный `aggregate_id`. События одного агрегата попадают в одну partition. Порядок доменных версий обеспечивается сериализацией relay для aggregate, а не только выбором key; см. [03](../architecture/03-communication.md). Глобальный порядок между агрегатами не гарантируется и не требуется.
 
 Outbox producer использует `acks=all` и idempotent producer. В production topics имеют replication factor не ниже 3 и `min.insync.replicas=2`. Локальная среда может использовать один broker без изменения контрактов.
 
@@ -53,3 +53,7 @@ Consumer фиксирует offset только после успешной тр
 - (−) At-least-once требует идемпотентности каждого consumer.
 - (−) Outbox relay остаётся шаблонным компонентом каждого сервиса-издателя.
 - (−) Порядок гарантируется только внутри partition. Producer обязан использовать стабильный `aggregate_id` как message key.
+
+## Уточнение порядка при релизной сверке 2026-09-05
+
+Outbox хранит стабильный event_id и aggregate_version. Relay блокирует aggregate до выбора самой ранней неопубликованной версии и последовательно публикует его события; SKIP LOCKED отдельных строк недостаточен. Consumer выключает auto-commit и продвигает только непрерывный диапазон offset после DB commit/подтверждённого DLQ. Дубликат event_id и несовместимый доменный переход различаются. Эти уточнения сохраняют Kafka и at-least-once, а не возвращают NATS.

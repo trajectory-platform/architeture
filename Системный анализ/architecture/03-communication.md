@@ -51,7 +51,7 @@ Kafka payloads используют protobuf envelope. `buf lint`, `buf breaking
 | `trajectory.billing.events.v1` | Billing | `payment.captured`, `hold.released`, `payout.*` |
 | `trajectory.notification.events.v1` | Notification | `notification.created`, `notification.delivered`, `notification.failed` |
 
-Message key — `aggregate_id`. События одного агрегата сохраняют порядок в partition. Envelope содержит `event_id`, `event_type`, `occurred_at`, `schema_version`, `producer` и protobuf payload.
+Message key — `aggregate_id`. Kafka сохраняет порядок поступления в partition; порядок бизнес-изменений дополнительно обеспечивает relay по правилам ниже. Envelope содержит `event_id`, `aggregate_id`, `aggregate_version`, `event_type`, `occurred_at`, `schema_version`, `producer` и protobuf payload.
 
 ### Каталог событий
 
@@ -69,6 +69,7 @@ Message key — `aggregate_id`. События одного агрегата с�
 | `lesson.started` | Core | Realtime, Notification | Прогрев комнаты; in-app уведомление |
 | `lesson.completed` | Core | Billing, Learning, Notification | Захватить holds; обновить прогресс; уведомить |
 | `lesson.recorded` | Core | Learning, Notification | Добавить запись в материалы; уведомить участников |
+| `recording.deleted` | Core | Learning | Инвалидировать материал и прекратить выдачу ссылок |
 | `payment.captured` | Billing | Core, Learning, Notification | Пометить оплату; обновить доступ; уведомить |
 | `homework.assigned` | Learning | Notification | Уведомить ученика |
 | `homework.submitted` | Learning | Notification | Уведомить преподавателя |
@@ -80,13 +81,13 @@ Message key — `aggregate_id`. События одного агрегата с�
 
 1. Consumer читает событие в своей consumer group.
 2. Consumer проверяет `event_id` и применяет изменение в одной транзакции своей БД.
-3. Consumer фиксирует offset только после commit.
+3. Consumer фиксирует next offset только за непрерывно обработанный диапазон partition после commit; успешный offset N+1 не позволяет пропустить неуспешный N. Auto-commit выключен; при rebalance незавершённое безопасно перечитывается.
 4. Redelivery с тем же `event_id` становится no-op.
 5. Kafka offset не является бизнес-идентификатором.
 
 ### Dead-letter topics
 
-После ограниченного числа попыток consumer публикует `events.v1.DeadLettered` в `trajectory.dlq.<service>.<consumer>`. Затем consumer фиксирует offset исходного сообщения. Ключ дедупликации DLQ — `(event_id, consumer)`.
+После ограниченного числа попыток consumer публикует `events.v1.DeadLettered` в `trajectory.dlq.<service>.<consumer>`. Только после подтверждения публикации DLQ и durable записи результата consumer может продвинуть непрерывный offset исходной partition. Ключ дедупликации DLQ — `(event_id, consumer)`.
 
 DLQ имеет retention 14 дней, отдельные ACL и алерт. `failure_message` санитизируется. Raw password, token, private message и другие секреты не попадают в DLQ. Replay выполняется вручную с audit record.
 
@@ -95,16 +96,19 @@ DLQ имеет retention 14 дней, отдельные ACL и алерт. `fai
 ```sql
 CREATE TABLE outbox (
     id           bigserial PRIMARY KEY,
+    event_id     uuid        UNIQUE NOT NULL,
     aggregate_id uuid        NOT NULL,
+    aggregate_version bigint NOT NULL,
     topic        text        NOT NULL,
     event_type   text        NOT NULL,
     payload      bytea       NOT NULL,
     created_at   timestamptz NOT NULL DEFAULT now(),
-    published_at timestamptz
+    published_at timestamptz,
+    UNIQUE (aggregate_id, aggregate_version)
 );
 ```
 
-Сервис пишет доменное изменение и outbox row в одной Postgres transaction. Relay выбирает строки через `FOR UPDATE SKIP LOCKED`, публикует с `acks=all` и message key = `aggregate_id`, затем ставит `published_at`. Падение после publish до update приводит к повторной публикации; consumer deduplication обеспечивает корректность.
+Сервис пишет доменное изменение и outbox row в одной Postgres transaction. Relay сначала получает transaction-scoped advisory lock для aggregate, затем читает его минимальную неопубликованную aggregate_version под row lock, публикует последовательно с `acks=all` и key = `aggregate_id`, затем ставит `published_at`. SKIP LOCKED между произвольными строками одного aggregate без этого протокола запрещён. Падение после publish до update приводит к повторной публикации; consumer deduplication обеспечивает корректность.
 
 ## Что не ходит через Kafka
 
@@ -112,3 +116,11 @@ CREATE TABLE outbox (
 - Медиа: LiveKit.
 - Запросы данных: gRPC.
 - Raw password, refresh/reset tokens, KEK и private signing keys.
+
+## Порядок, версии и восстановление
+
+Версия события назначается под блокировкой доменного aggregate в той же транзакции, что outbox; одна версия соответствует одному событию, constraint `(aggregate_id, aggregate_version)` уникален. Consumer хранит stable event receipt и проверяет ожидаемую версию для order-sensitive projections. При пропуске/конфликте сохраняет событие в durable pending/reconciliation state; не объявляет его применённым. После DLQ последующие версии не должны молча обходить необходимый переход.
+
+Несколько relay могут обрабатывать разные aggregates параллельно; один aggregate публикуется по порядку, без перескока через ошибку. Повтор публикации имеет тот же event_id/version. Outbox ID — локальный технический ключ, не глобальный event ID. Broker idempotence не заменяет receipt в БД; общий key не упорядочивает сам по себе разные producers и разные topics. Семантика платформы: [Kafka design](https://kafka.apache.org/42/design/design/).
+
+Для money/scheduling задаются retention и алерт раньше его исчерпания, срок хранения receipts не короче разрешённого replay, процедура восстановления/сверки при выходе за окно. `acks=all` без согласованных replication/min ISR и backup не является обещанием отсутствия потерь при любых отказах.

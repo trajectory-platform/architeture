@@ -1,43 +1,44 @@
 @startuml whiteboard-sync
-title Синхронизация вайтборда: апдейт, fan-out, reconnect
-
-actor "Client A\n(Yjs)" as a
-actor "Client B\n(Yjs)" as b
+title Доска: durable ack, snapshot -> live и компакция
+actor "Client A" as a
+actor "Client B" as b
 participant "Realtime #1" as rt1
 participant "Realtime #2" as rt2
-database "realtime_db\n(board_updates,\nboard_snapshots)" as db
-queue "Redis Pub/Sub\n(канал комнаты)" as redis
-
-== Обычный апдейт ==
-a -> a: штрих на доске ->\nYjs кодирует инкрементальный update (bytes)
-a -> rt1: board.update {blob}
-rt1 -> db: INSERT board_updates (lesson_id, seq, blob)
-note right of db: сначала персист, потом fan-out —\nувиденный апдейт уже не потеряется
-rt1 -> redis: publish(room, blob)
-redis -> rt2: deliver
-rt2 -> b: board.update {blob}
-b -> b: Y.applyUpdate — состояние сходится
-
-== Reconnect клиента B ==
-b -> b: обрыв сети; локальные правки копятся офлайн
-b -> rt2: WSS reconnect (room JWT)\nboard.sync_request {state vector}
-rt2 -> db: SELECT последний snapshot\n+ updates WHERE seq > upto_seq
-rt2 --> b: board.sync_response {snapshot + tail}
-note right of b
-  сервер шлёт надмножество (не диффает блобы);
-  Yjs идемпотентно отбрасывает уже применённое
+database "realtime_db" as db
+queue "Redis Pub/Sub" as redis
+participant "Node compactor" as comp
+== Append ==
+a -> rt1: board.update(update_id, blob)
+group Одна DB transaction
+  rt1 -> db: lock board_rooms; check receipt/digest
+  rt1 -> db: increment last_seq; INSERT update + receipt
+end
+rt1 --> a: board.ack(update_id, seq) после commit
+rt1 -> redis: publish(seq, blob)
+redis -> rt2: best-effort delivery
+rt2 -> b: board.update(seq, blob)
+== Snapshot -> live ==
+b -> rt2: sync_request / reconnect
+rt2 -> redis: subscribe; ждать подтверждения; buffer live
+rt2 -> db: consistent snapshot + tail до H=last_seq
+rt2 --> b: snapshot, upto_seq, tail, H
+rt2 --> b: buffered updates seq > H
+b -> rt2: повтор pending updates с прежними ID
+== Потеря последнего publish без разрыва WS ==
+rt2 -> db: heartbeat: durable last_seq
+rt2 -> b: board.watermark(last_seq)
+b -> rt2: gap -> sync_request
+== Компакция ==
+comp -> db: consistent snapshot + tail до H
+comp -> comp: apply to Y.Doc; GC; encodeStateAsUpdate
+group Одна DB transaction
+  comp -> db: lock rooms; проверить исходное поколение
+  comp -> db: INSERT verified snapshot(H); update snapshot_seq
+  comp -> db: удалить покрытые updates <= H
+end
+note over db,comp
+  last_seq и receipts не сбрасываются.
+  Snapshot после pruning — часть источника истины.
+  Конкурирующие updates > H сохраняются.
 end note
-b -> rt2: board.update {офлайн-правки}
-note right of b: конфликты разрешает CRDT на клиентах
-rt2 -> db: append
-rt2 -> redis: publish
-redis -> rt1: deliver
-rt1 -> a: board.update
-
-== Компакция (фон) ==
-participant "Compactor\n(Node sidecar)" as comp
-comp -> db: snapshot + tail (по порогу N апдейтов)
-comp -> comp: Y.mergeUpdates
-comp -> db: INSERT board_snapshots (upto_seq)
-note right of comp: снапшот — оптимизация чтения;\nкорректность не зависит от него
 @enduml

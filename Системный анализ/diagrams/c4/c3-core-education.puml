@@ -23,7 +23,7 @@ Container_Boundary(core, "Core Education Service") {
     Component(chats, "chats", "Go package", "Личные/групповые/комнатные чаты: сообщения, вложения (MinIO), статусы прочтения, поиск")
     Component(support, "support", "Go package", "Тикеты: open / pending / resolved / closed")
     Component(uploads, "uploads", "Go package", "Выдача presigned URL после проверки прав")
-    Component(outbox_relay, "outbox relay", "Go goroutine", "FOR UPDATE SKIP LOCKED -> Kafka publish -> published_at")
+    Component(outbox_relay, "outbox relay", "Go goroutine", "aggregate lock -> version order -> Kafka publish -> published_at")
     Component(consumers, "event consumers", "Go goroutines", "Kafka consumer group: payment.captured, user.registered; dedup event_id")
 }
 

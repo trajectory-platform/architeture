@@ -22,8 +22,8 @@ System_Boundary(trajectory, "Trajectory Platform") {
     ContainerDb(pg_auth, "auth_db", "PostgreSQL", "identities, refresh_tokens, ключи")
     ContainerDb(pg_edu, "education_db", "PostgreSQL", "bookings, participants, lessons, recordings, chats, support, outbox")
     ContainerDb(pg_learning, "learning_db", "PostgreSQL", "courses, groups, enrollments, homework, tests, materials, progress, outbox")
-    ContainerDb(pg_billing, "billing_db", "PostgreSQL", "ledger_entries, holds, outbox")
-    ContainerDb(pg_rt, "realtime_db", "PostgreSQL", "board_updates, board_snapshots")
+    ContainerDb(pg_billing, "billing_db", "PostgreSQL", "accounts, ledger_entries, holds, outbox")
+    ContainerDb(pg_rt, "realtime_db", "PostgreSQL", "board_rooms, board_updates, receipts, board_snapshots")
     ContainerDb(pg_notification, "notification_db", "PostgreSQL", "preferences, notifications, deliveries, processed_events")
 
     ContainerDb(redis, "Redis", "Redis", "Кэш, presence, rate limiting, fan-out Realtime и Notification")
@@ -32,8 +32,10 @@ System_Boundary(trajectory, "Trajectory Platform") {
 }
 
 System_Ext(livekit, "LiveKit", "WebRTC SFU: видео, аудио, screen share")
+System_Ext(egress, "LiveKit Egress", "С 2.0: отдельный recording worker")
+Container(compactor, "Board Compactor", "Node.js", "При pruning: Y.Doc/GC + atomic snapshot")
 System_Ext(email, "Email provider", "Транзакционные письма")
-System_Ext(push, "Push provider", "Этап 2")
+System_Ext(push, "Push provider", "Вне MVP 2.1")
 
 Rel(student, spa, "Использует", "HTTPS")
 Rel(teacher, spa, "Использует", "HTTPS")
@@ -75,6 +77,11 @@ Rel(realtime, redis, "Presence, fan-out (Pub/Sub)", "RESP")
 Rel(notification, redis, "In-app fan-out (Pub/Sub)", "RESP")
 
 Rel(core, minio, "Выдача presigned URL", "S3 API")
+Rel(core, egress, "Start/Stop recording", "Server SDK")
+Rel(egress, minio, "Recording bytes", "S3 API")
+Rel(egress, core, "Recording lifecycle webhook", "HTTPS")
+Rel(compactor, pg_rt, "Verified snapshot + pruning", "SQL")
+Rel(notification, auth, "Delivery payload / CompleteDelivery", "gRPC, workload identity")
 Rel(core, livekit, "Минт токенов, закрытие комнат", "Server SDK")
 Rel(livekit, core, "Вебхуки", "HTTPS")
 

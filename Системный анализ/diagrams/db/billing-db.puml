@@ -4,6 +4,13 @@ title Trajectory — ER: billing_db (Billing Service)
 hide circle
 skinparam linetype ortho
 
+entity "accounts" as accounts {
+  * id : uuid <<PK>>
+  --
+  * currency : char(3)
+  * created_at : timestamptz
+}
+
 entity "ledger_entries" as ledger {
   * id : bigserial <<PK>>
   --
@@ -19,9 +26,10 @@ entity "holds" as holds {
   --
   * account_id : uuid
   * amount : bigint  -- CHECK (amount > 0)
-  * reference_id : uuid  -- booking_participant_id в Core (без FK)
+  * reference_id : uuid <<UQ>>  -- booking_participant_id в Core (без FK)
   * status : text  -- ACTIVE | CAPTURED | RELEASED
-  * idempotency_key : text <<UQ>>
+  * idempotency_key : text <<UQ>> -- scoped
+  * request_hash : bytea
   * created_at : timestamptz
 }
 
@@ -37,12 +45,23 @@ entity "idempotency_keys" as idem {
 entity "outbox" as outbox {
   * id : bigserial <<PK>>
   --
+  * event_id : uuid <<UQ>>
+  * aggregate_version : bigint
   * aggregate_id : uuid  -- hold_id
-  * subject : text  -- trajectory.payment.captured, hold.released
+  * topic : text
+  * event_type : text
   * payload : bytea  -- protobuf
   * created_at : timestamptz
   published_at : timestamptz
 }
+
+accounts ||--o{ ledger
+accounts ||--o{ holds
+note bottom of accounts
+  SELECT FOR UPDATE до проверки доступных средств;
+  все расходы/holds/корректировки используют эту строку.
+  Несколько accounts блокируются в порядке ID.
+end note
 
 holds ||..o{ ledger : "capture/release порождает\nстроки (reference_id,\nбез FK — леджер переживает\nлюбые правки holds)"
 
@@ -57,8 +76,8 @@ note bottom of holds
   отдельный hold на каждого ученика;
   amount = фиксированная цена ученика;
   терминальные статусы финальны;
-  повторная доставка события
-  на CAPTURED/RELEASED — no-op
+  тот же outcome — no-op;
+  противоположный — conflict/reconciliation
 end note
 
 note right of idem

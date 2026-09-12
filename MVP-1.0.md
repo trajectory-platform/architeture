@@ -3,6 +3,9 @@
 > Формат: командный проект  
 > Контрольная точка: январь  
 > Статус документа: предлагаемая декомпозиция
+> Год и точная дата контрольной точки требуют подтверждения.
+> Сверка базы: `origin/master@a054171`, 2026-09-05; критерии и открытые решения — в [релизной готовности](Системный%20анализ/architecture/09-release-readiness.md).
+> Покрытие каждого требования — [матрица MVP](Матрица%20покрытия%20MVP.md); план не подтверждает реализацию.
 
 ## Назначение этапа
 
@@ -31,11 +34,11 @@ MVP 1.0 — первый работающий вертикальный срез 
 | `M10-02` | Эксплуатационный baseline | `/healthz`, `/readyz`, graceful shutdown, HTTPS на stage, secrets вне кода, структурированные логи, metrics, traces и минимальные alerts | 2.13–2.19 |
 | `M10-03` | Contracts-first foundation | Event envelope, базовые `auth.v1`, `education.v1`, `billing.v1`, `notification.v1`, OpenAPI первого среза; генерация и compatibility checks | 2.1, 2.18, 2.21 |
 | `M10-04` | API Gateway | REST edge, JWT/JWKS validation, REST → gRPC, единый формат ошибок, CORS и базовый rate limiting | 2.13–2.18, 3.9–3.10 |
-| `M10-05` | Auth baseline | Регистрация и подтверждение email, login, refresh rotation/reuse detection, logout, восстановление пароля, роли `student`, `teacher`, seed-роли администратора | 3.1–3.3, 3.6–3.11 |
+| `M10-05` | Auth baseline | Регистрация и подтверждение email, обязательные consent flags, login, refresh rotation/reuse detection, logout, восстановление пароля, роли `student`, `teacher`, seed-роли администратора | 2.11 частично, 3.1–3.3, 3.6–3.11 |
 | `M10-06` | Notification minimum | Отдельные `notification_db` и Kafka consumer group, transactional email для подтверждения/восстановления, in-app inbox, unread counter, `MarkRead`, WebSocket delivery | 3.2, 3.6, 14.1–14.3, 14.7–14.9 |
 | `M10-07` | Базовые профили | Профиль пользователя, timezone, основные поля ученика и преподавателя, цена и длительность индивидуального занятия, верификация/блокировка администратором | 2.20, 4.1–4.3, 4.5–4.6, 16.8 |
 | `M10-08` | Минимальные справочники | Предметы, направления, уровни подготовки, типы и длительности занятий | 5.1–5.4 |
-| `M10-09` | Billing core | Immutable ledger, вычисляемый balance, admin TopUp, история ученика, `PlaceHold`, `CaptureHold`, `ReleaseHold`, идемпотентность | 16.1–16.5, 16.7–16.8, 16.15, 16.17 |
+| `M10-09` | Billing core | Immutable ledger, account-level serialization, вычисляемый balance, admin-only TopUp, история ученика, `PlaceHold`, `CaptureHold`, `ReleaseHold`, scoped идемпотентность | 16.1–16.5, 16.7–16.8, 16.15, 16.17 |
 | `M10-10` | Разовое расписание | Разовые окна, materialized slots, просмотр слотов, day/week/month calendar преподавателя и упрощённый календарь ученика | 6.2, 6.4–6.5, 6.18–6.19 |
 | `M10-11` | Индивидуальная booking saga | Разовая бронь, DB-защита от double booking, резерв средств, освобождение слота при отказе, идемпотентный reconciler | 6.6, 6.10–6.13 |
 | `M10-12` | Жизненный цикл урока | Создание после подтверждения брони, статусы, membership, временное окно входа, завершение, auto-complete, attendance и no-show | 7.1–7.5, 7.21–7.25 |
@@ -43,7 +46,7 @@ MVP 1.0 — первый работающий вертикальный срез 
 | `M10-14` | Чат комнаты | Отправка и сохранение сообщений, история, read state, unread counter, идемпотентный client message ID | 7.17, 13.3, 13.5–13.6, 13.8–13.9 |
 | `M10-15` | S3 foundation | Scoped presigned upload/download, membership check, ограничения типа/размера, пространства для avatars и chat attachments | 17.1–17.4, 17.6 |
 | `M10-16` | Минимальные кабинеты | Login/registration, профиль, расписание, бронирование, ближайший урок, вход в комнату, чат, баланс и история операций | 19.1.1–19.1.2, 19.1.8, 19.1.11, 19.2.1–19.2.2, 19.2.6, 19.2.8–19.2.9 частично |
-| `M10-17` | Минимальная admin panel | Пользователи, преподаватели, справочники, брони/уроки, журнал операций и ручное пополнение | 18.1–18.3, 18.5–18.6, 18.9, 18.13 частично |
+| `M10-17` | Минимальная admin panel | Пользователи, преподаватели, справочники, брони/уроки, журнал операций и ручное пополнение с audit | 2.2, 2.10 частично, 18.1–18.3, 18.5–18.6, 18.9, 18.13 частично |
 | `M10-18` | Вертикальные тесты | Unit и integration tests, гонки refresh/booking/hold, Kafka duplicate delivery, board reconnect, Compose smoke и E2E основного сценария | 2.6, 2.13, 2.18–2.19 |
 
 ## Архитектурные ограничения
@@ -51,7 +54,13 @@ MVP 1.0 — первый работающий вертикальный срез 
 - Сервисные границы соответствуют принятой архитектуре: API Gateway, Auth, Core Education, Learning, Billing, Realtime и Notification.
 - Публичные и межсервисные контракты изменяются сначала в `contracts`.
 - Доменное изменение и outbox event фиксируются в одной PostgreSQL transaction.
-- Kafka consumers идемпотентны и фиксируют offset только после commit.
+- Kafka consumers идемпотентны; offset продвигается только за непрерывно обработанный диапазон partition после DB commit. Relay сериализует публикации одного aggregate.
+- Минимальные confirmation/reset, блокировка и audit из T23/T26/T28/T29, transport/E2E из T30/T31 входят в 1.0 отдельными частями; полный RBAC/OAuth не является их зависимостью. Изменения contracts/migrations из T20/T21 поставляются вперёд.
+- Seed STAFF может выполнять только серверно разрешённые admin-операции; обычный владелец баланса не может вызвать TopUp.
+- До demo фиксируется минимальная policy DEC-01: cancellation window, completed/no-show, технический срыв и компенсация PENDING. Редактор policy откладывается, сама policy — нет.
+- Confirmation и recovery используют защищённый восстанавливаемый delivery payload в Auth; hash токена не используется для восстановления URL.
+- Чат и доска подтверждаются только после durable commit; optimistic UI показывает pending до ack.
+- Минимальные consent flags, security/money/admin audit и безопасная загрузка файлов входят в первый срез; полное оформление этих разделов — в 2.1.
 - Цена индивидуального урока фиксируется в booking snapshot.
 - Пароли и raw tokens не попадают в логи, Kafka или DLQ.
 - Проверка доступа к комнате, чату и файлам выполняется по membership, а не только по роли.
@@ -75,7 +84,11 @@ Infrastructure + contracts
 - Демонстрационный сценарий проходит end-to-end через реальные PostgreSQL, Kafka, Redis, MinIO и LiveKit.
 - Повторные REST-запросы и Kafka-события не создают дублей доменного или денежного состояния.
 - Double booking исключён constraint на уровне БД.
-- После reconnect восстанавливаются доска и чат урока.
+- После reconnect восстанавливаются доска и чат урока; проходят проверки crash-before/after-ack, compaction→append и потери Redis-подписки без обрыва WS.
+- Два расхода по 700 при балансе 1 000 не создают два holds; replay не меняет исход.
+- Пропавший LiveKit webhook не оставляет вечный hold; неоднозначный исход направляется на разбор по DEC-01.
+- Confirmation/reset доставляются после рестарта Auth между commit и отправкой.
+- Backup/restore первого среза проверен; результаты и согласованные RPO/RTO записаны в evidence.
 - Один trace связывает REST, gRPC, outbox и Kafka consumer.
 - Нет открытых дефектов P0/P1 по сценарию этапа.
 

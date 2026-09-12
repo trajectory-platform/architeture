@@ -27,8 +27,11 @@ Session соответствует refresh family. Максимум 10 акти�
 
 | Ресурс | Проверка владельца |
 |---|---|
-| Урок и запись | Core: строка `lesson_participants`; представитель не входит автоматически |
-| Чат и support ticket | Core: membership либо отдельное admin permission |
+| Комната урока | Core: строка `lesson_participants`; представитель и сотрудник не входят автоматически, staff-наблюдение вне MVP |
+| Карточка урока и административные действия | Core: отдельные `schedule_*` permissions; не создают членство и доступ в комнату |
+| Запись | Участник — по membership; сотрудник — `schedule_lesson_view` + `schedule_recording_view`, причина и audit каждого открытия; удаление — отдельное `schedule_recording_delete` |
+| Чат пользователей | Core: membership; просмотр карточки и административные permissions не открывают личный или учебный чат |
+| Support ticket | Core: membership либо отдельное admin permission |
 | Курс, задание, тест, материал | Learning: ownership/enrollment/group membership |
 | Баланс и ledger | Billing: владелец account либо finance permission |
 | Notification | Notification: `notification.user_id == caller.identity_id` |
@@ -49,7 +52,9 @@ Gateway может отклонить запрос без permission, но се�
 - Raw tokens, password, OAuth provider tokens, KEK и private keys запрещены в logs, events и DLQ.
 - Notification не получает полный профиль или private chat content.
 - Reset и confirmation events содержат `delivery_request_id`; URL выдаётся Notification через workload-authenticated Auth RPC.
-- Recording требует явного согласия участников, scoped access и удаление через один месяц.
+- Recording требует явного согласия участников; отсутствие или отзыв согласия останавливает запись, возобновление требует согласия всех присутствующих. Срок хранения — календарный месяц от готовности файла. Досрочное удаление общей записи требует решения суперадминистратора, причины и уведомления участников; запрос одного участника не удаляет её автоматически.
+
+Подробные правила административного просмотра и удаления — в [карточке урока](../../Бизнес%20анализ/Админ-панель/Расписание%20и%20уроки/Карточка%20урока.md), каталог разрешений — в [Ролях и разрешениях](../../Бизнес%20анализ/Админ-панель/Пользователи%20и%20доступ/Роли%20и%20разрешения.md).
 
 Kafka topics с PII используют отдельные ACL и короткий retention. DLQ содержит только разрешённый безопасный payload либо redacted metadata.
 

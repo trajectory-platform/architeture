@@ -53,6 +53,7 @@ Learning Service владеет содержанием обучения: кур�
 |---|---|---|
 | `lesson.completed` | потребляет | Обновить attendance projection и progress по каждому ученику |
 | `lesson.recorded` | потребляет | Создать material metadata со сроком доступности записи |
+| `recording.deleted` | потребляет | Инвалидировать metadata и ссылки материала |
 | `payment.captured` | потребляет | Обновить paid access projection, если продукт требует оплаты |
 | `homework.assigned` | публикует | Уведомить ученика |
 | `homework.submitted` | публикует | Уведомить преподавателя |
@@ -88,3 +89,9 @@ Progress обновляется по `(lesson_id, student_id)` и не зави�
 Learning масштабируется stateless-репликами. Kafka partitions распределяют event load. Background jobs используют row locking и `SKIP LOCKED`.
 
 Сервис не логирует ответы ученика, private material content или presigned URLs. Преподаватель видит только свои courses/groups. Ученик видит только действующие enrollments. Административный доступ требует permission и audit.
+
+## Срезы и критерий освоения
+
+В 1.0 Learning health-only; courses/groups/homework/tests/materials/progress foundation — 2.0; итоговая методика, gamification/representative summary — 2.1. Освоение темы уже в foundation требует DEC-05: формулы, источника оценок, версии программы и обработки коррекций. lesson.completed увеличивает посещаемость, но сам по себе не доказывает освоение. Поздний completion не отменяет более новую correction; event receipt и `(lesson_id, student_id)` защищают разные виды повторов.
+
+В 2.0 recording.deleted от Core закрывает material metadata; expiry запрещает новую ссылку независимо от скорости физического удаления. Доступ на download повторно проверяется у владельца, ранее выданная presigned ссылка ограничена TTL. Формат board material задаётся явно: Yjs viewer либо render/export. Receipt события и изменение всех participant projections атомарны либо ведутся durable receipts по участнику.

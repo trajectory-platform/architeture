@@ -13,7 +13,7 @@ In:
 - `pkg/kafkax`: Kafka producer construction from `AUTH_KAFKA_BROKERS`; idempotent producer enabled; required acknowledgements `all`; bounded retries and backoff; TLS/SASL options for non-local environments.
 - Auth publishes to `trajectory.auth.events.v1`. The service does not create or alter production topics. A development-only provisioner may create local topics with explicit partitions and replication factor.
 - `pkg/outbox.Relay`:
-  - Select a batch with `SELECT ... FOR UPDATE SKIP LOCKED` inside a transaction.
+  - Claim an aggregate with a transaction-scoped advisory lock, then select its earliest unpublished aggregate_version with row locking. Never skip an older pending event of the same aggregate. Different aggregates may run in parallel.
   - Publish each row with topic, message key, payload, `event_id`, content type, schema version, trace context and outbox id in headers while the row remains locked.
   - Use `aggregate_id`/`identity_id` as message key so one identity stays ordered within one partition.
   - Mark `published_at` after broker acknowledgement, then commit the transaction.
@@ -29,7 +29,7 @@ Out: consumer implementations, topic retention policy deployment, schema registr
 
 - Kafka producer idempotence reduces duplicates inside one producer session but does not remove crash window between broker acknowledgement and `published_at`. Consumers must deduplicate by `event_id`.
 - Keep batches bounded because the database transaction remains open until Kafka acknowledges the batch. `FOR UPDATE SKIP LOCKED` prevents another relay from selecting the same pending rows.
-- Ordering guarantee is per Kafka message key, not global. All events for one identity use the same key.
+- Kafka preserves append order in a partition. The relay additionally serializes each aggregate and publishes increasing aggregate_version; a common key alone does not order multiple producers. All events for one identity use the same key.
 - Relay never publishes rolled-back domain state because outbox insert belongs to the domain transaction.
 
 ## Acceptance criteria
@@ -41,3 +41,9 @@ Out: consumer implementations, topic retention policy deployment, schema registr
 - [ ] Kafka outage accumulates rows without process crash; recovery drains backlog.
 - [ ] Rolled-back business transaction produces no Kafka message.
 - [ ] Logs and headers contain no password, raw token, delivery URL, KEK or private key.
+
+## Дополнительная приёмка MVP 1.0
+
+- [ ] Два relay: первый задержан на ранней версии identity, второй не публикует следующую версию раньше него; другой aggregate продолжает работать.
+- [ ] Crash/restart сохраняет event_id/version; возврат в очередь после ошибки не меняет порядок.
+- [ ] Test consumer не коммитит N+1, пока N не обработан либо надёжно передан в DLQ; rebalance не теряет незавершённую работу.
